@@ -1,31 +1,15 @@
-# -*- mode: python ; coding: utf-8 -*-
+import sys
 from pathlib import Path
-from PyInstaller.utils.hooks import collect_all
+from PyInstaller.utils.hooks import collect_all, collect_submodules
 
 project = Path(SPECPATH)
 src_dir = project / 'src'
 
-datas, binaries, hiddenimports = collect_all('customtkinter')
+if str(src_dir) not in sys.path:
+    sys.path.insert(0, str(src_dir))
 
-# Include akphone_dispatcher package
-hiddenimports += [
-    'akphone_dispatcher',
-    'akphone_dispatcher.core',
-    'akphone_dispatcher.core.config',
-    'akphone_dispatcher.core.models',
-    'akphone_dispatcher.core.payload',
-    'akphone_dispatcher.core.scanner',
-    'akphone_dispatcher.services',
-    'akphone_dispatcher.services.adb_service',
-    'akphone_dispatcher.services.notifier',
-    'akphone_dispatcher.services.session',
-    'akphone_dispatcher.gui',
-    'akphone_dispatcher.gui.app',
-    'akphone_dispatcher.gui.workers.feeder_worker',
-    'akphone_dispatcher.utils',
-    'akphone_dispatcher.utils.helpers',
-    'akphone_dispatcher.utils.logger',
-]
+datas, binaries, hiddenimports = collect_all('customtkinter')
+hiddenimports += collect_submodules('akphone_dispatcher')
 
 a = Analysis(
     [str(project / 'main.py')],
