@@ -2,11 +2,13 @@
 __pycache__/
 *.py[cod]
 *$py.class
+*.egg-info/
 
 # Build and distribution
 build/
 dist/
 dist.zip
+*.zip
 
 # Virtual environments
 venv/
@@ -17,8 +19,21 @@ env/
 .idea/
 .vscode/
 
-# Logs
+# Testing & Linting
+.pytest_cache/
+.ruff_cache/
+
+# Logs & Runtime State
+logs/
 *.log
+.payload-store/
+.transfer-work/
+session_state.json
+configs/session_state.json
+
+# Environment variables
+.env
+.env.local
 
 # Temporary test folders
 test-folder/

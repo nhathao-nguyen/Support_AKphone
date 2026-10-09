@@ -1,5 +1,6 @@
 @echo off
-chcp 65001 >nul
+setlocal
 cd /d "%~dp0"
-python generator_gui.py
+echo Starting AKPhone Smart Dispatcher...
+python main.py
 if errorlevel 1 pause

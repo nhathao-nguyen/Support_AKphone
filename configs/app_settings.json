@@ -1,0 +1,31 @@
+{
+    "source_dir": "D:\\nhathao\\gehihi 2.0\\create-file\\page-hao",
+    "akphone_dir": "C:\\AKPhone",
+    "adb_path": "C:\\AKPhone\\ADB\\adb.exe",
+    "running_dir": "C:\\AK_Running",
+    "m_index": "2",
+    "check_interval": "3.5",
+    "page_names": "Reel of Life\nBehind Closed Doors\nThe Turning Point\nUnmasked Truth\nCold Truth",
+    "target_device": "033ad2b00504",
+    "watchdog_timeout": 360,
+    "auto_screencap": true,
+    "auto_clean_storage": true,
+    "auto_clean_payloads": true,
+    "payload_retention_days": 0,
+    "device_profiles": {
+        "033ad2b00504": {
+            "fb_index": "1",
+            "source_dir": "D:\\nhathao\\gehihi 2.0\\create-file\\page-hao",
+            "page_names": "Reel of Life\nUnspoken Scenes\nThe Turning Point\nUnmasked Truth\nCold Truth\nClassified Echoes\nUnmarked Heroes\nThe Silent Rank\nLoyal Defiance\nHidden Insignia\nThe Secret Order\nBeyond The Frontline\nThe Final Salute\nKarma's Verdict\nThe Tarnished Star",
+            "enabled": true
+        }
+    },
+    "telegram": {
+        "bot_token": "",
+        "chat_id": "",
+        "enabled": false,
+        "notify_on_success": true,
+        "notify_on_error": true,
+        "send_screenshots": true
+    }
+}
