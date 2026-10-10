@@ -82,3 +82,52 @@ def test_farm_feeder_manager_start_and_stop():
     manager.stop_all()
     assert not manager.is_running("DEV_1")
     assert not manager.is_running("DEV_2")
+
+
+def test_init_scripts_for_device_success(tmp_path):
+    from akphone_dispatcher.gui.app import AKPhoneApp
+
+    ak_dir = tmp_path / "akphone"
+    ak_dir.mkdir()
+    running_dir = tmp_path / "running"
+    source_dir = tmp_path / "source"
+    p1_dir = source_dir / "page-1"
+    v_dir = p1_dir / "video"
+    v_dir.mkdir(parents=True)
+    (v_dir / "01.mp4").write_text("dummy video")
+
+    tpl_txt = tmp_path / "template_script.txt"
+    tpl_txt.write_text("SCRIPT {ID} {PAGE_NAME} {VIDEO_DIR} {CAPTION_PATH} {COMMENT_PATH}")
+    tpl_ini = tmp_path / "template_config.ini"
+    tpl_ini.write_text("INI {ID} {PAGE_NAME} {VIDEO_DIR}")
+
+    app = MagicMock()
+    app.config = AppConfig(tmp_path / "cfg.json")
+    app.config.akphone_dir = str(ak_dir)
+    app.config.running_dir = str(running_dir)
+    app.config.source_dir = str(source_dir)
+    app.config.template_txt_path = tpl_txt
+    app.config.template_ini_path = tpl_ini
+    app.config.page_names = "page-1: My Fanpage"
+
+    prof = DeviceProfile(serial="TEST_SERIAL", fb_index="2")
+    app.device_profiles = {"TEST_SERIAL": prof}
+
+    with patch("akphone_dispatcher.gui.app.transfer_payload") as mock_transfer:
+        res = AKPhoneApp._init_scripts_for_device(app, "TEST_SERIAL")
+        assert res is True
+        mock_transfer.assert_called_once()
+
+    assert "page1fb2" in prof.pages_data
+    page = prof.pages_data["page1fb2"]
+    assert page.page_id == "page1fb2"
+    assert page.fanpage_name == "My Fanpage"
+
+    script_file = ak_dir / "SCRIPTS" / "page1fb2.txt"
+    assert script_file.exists()
+    assert "SCRIPT page1fb2 My Fanpage" in script_file.read_text(encoding="utf-8")
+
+    offer_file = ak_dir / "OFFERS" / "page1fb2.ini"
+    assert offer_file.exists()
+    assert "INI page1fb2 My Fanpage" in offer_file.read_text(encoding="utf-8")
+

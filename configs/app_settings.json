@@ -15,8 +15,14 @@
     "device_profiles": {
         "033ad2b00504": {
             "fb_index": "1",
-            "source_dir": "D:\\nhathao\\gehihi 2.0\\create-file\\page-hao",
-            "page_names": "Reel of Life\nUnspoken Scenes\nThe Turning Point\nUnmasked Truth\nCold Truth\nClassified Echoes\nUnmarked Heroes\nThe Silent Rank\nLoyal Defiance\nHidden Insignia\nThe Secret Order\nBeyond The Frontline\nThe Final Salute\nKarma's Verdict\nThe Tarnished Star",
+            "source_dir": "D:/test/via-1",
+            "page_names": "Reel of Life\nUnspoken Scenes\nThe Turning Point",
+            "enabled": true
+        },
+        "294665ed0904": {
+            "fb_index": "2",
+            "source_dir": "D:/test/via-2",
+            "page_names": "Underestimated Warriors\nTalent Without Limits\nThe Fighter Within",
             "enabled": true
         }
     },

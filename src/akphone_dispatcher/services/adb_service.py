@@ -377,10 +377,12 @@ class AdbService:
             logger.error(f"Lỗi nạp cờ Done lên điện thoại {serial}: {e}")
             return False
 
-    def list_done_flags(self, serial: str) -> Set[str]:
+    def list_done_flags(self, serial: str) -> Optional[Set[str]]:
         """List active flag file names currently present in the Done directory."""
         try:
             output = self.run_shell(serial, "ls /storage/emulated/0/Android/Done", timeout=4)
+            if output is None:
+                return None
             raw_lines = [
                 f.strip()
                 for f in output.split()
@@ -394,5 +396,5 @@ class AdbService:
                     flags.add(f)
             return flags
         except Exception:
-            return set()
+            return None
 

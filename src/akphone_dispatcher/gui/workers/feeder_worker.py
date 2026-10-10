@@ -8,7 +8,7 @@ import time
 from typing import Any, Callable, Dict, List, Optional, Set
 
 from akphone_dispatcher.core.config import AppConfig
-from akphone_dispatcher.core.models import DeviceProfile
+from akphone_dispatcher.core.models import DeviceProfile, PageInfo
 from akphone_dispatcher.core.payload import clean_completed_payloads, transfer_payload
 from akphone_dispatcher.services.adb_service import AdbService
 from akphone_dispatcher.services.notifier import TelegramNotifier
@@ -215,6 +215,9 @@ class DeviceFeederWorker:
 
             try:
                 files_in_done = self.adb.list_done_flags(self.serial)
+                if files_in_done is None:
+                    time.sleep(1)
+                    continue
 
                 # 0. Check sentinel flag round_done.txt on this phone
                 sentinel_triggered = False
@@ -376,7 +379,10 @@ class DeviceFeederWorker:
                         )
                         break
                     else:
-                        time.sleep(5)
+                        logger.info(
+                            f"🔄 [MÁY {self.serial} | {self.profile.via_tag}] Chờ 20 giây trước khi chuẩn bị Vòng {self.round_number + 1} ({len(still_has_posts)} Page cần chạy)..."
+                        )
+                        time.sleep(20)
                         if self.stop_event.is_set():
                             break
                         if self._init_done_round():

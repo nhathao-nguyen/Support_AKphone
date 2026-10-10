@@ -952,77 +952,89 @@ class AKPhoneApp(ctk.CTk):
         ini_tpl = self.config.template_ini_path.read_text(encoding="utf-8")
 
         prof.pages_data = {}
+        m_val = prof.fb_index or "1"
 
-        for folder_name, posts in scanned.items():
-            m_num = re.search(r"\d+", folder_name)
-            n_num = m_num.group(0) if m_num else folder_name
-            page_id = f"page{n_num}fb{m_val}"
-            fanpage_name = (
-                page_names_map.get(folder_name)
-                or page_names_map.get(f"page-{n_num}")
-                or f"Fanpage {folder_name}"
+        try:
+            for folder_name, posts in scanned.items():
+                m_num = re.search(r"\d+", folder_name)
+                n_num = m_num.group(0) if m_num else folder_name
+                page_id = f"page{n_num}fb{m_val}"
+                fanpage_name = (
+                    page_names_map.get(folder_name)
+                    or page_names_map.get(f"page-{n_num}")
+                    or f"Fanpage {folder_name}"
+                )
+
+                page_video_dir = Path(running_base) / page_id
+                page_video_dir.mkdir(parents=True, exist_ok=True)
+
+                page_caption_filename = f"Caption_{page_id}.txt"
+                page_comment_filename = f"Comment_{page_id}.txt"
+                ak_caption_path = str(scripts_files_dest / page_caption_filename)
+                ak_comment_path = str(scripts_files_dest / page_comment_filename)
+
+                final_txt = (
+                    txt_tpl.replace("{ID}", page_id)
+                    .replace("{PAGE_NAME}", fanpage_name)
+                    .replace("{VIDEO_DIR}", str(page_video_dir))
+                    .replace("{CAPTION_PATH}", page_caption_filename)
+                    .replace("{COMMENT_PATH}", page_comment_filename)
+                )
+                (scripts_dest / f"{page_id}.txt").write_text(final_txt, encoding="utf-8")
+
+                final_ini = (
+                    ini_tpl.replace("{ID}", page_id)
+                    .replace("{PAGE_NAME}", fanpage_name)
+                    .replace("{VIDEO_DIR}", str(page_video_dir))
+                )
+                (offers_dest / f"{page_id}.ini").write_text(final_ini, encoding="utf-8")
+
+                page_obj = PageInfo(
+                    page_id=page_id,
+                    folder_name=folder_name,
+                    fanpage_name=fanpage_name,
+                    total_posts=len(posts),
+                    current_idx=1,
+                    posts=posts,
+                    video_dir=str(page_video_dir),
+                    caption_destinations=[ak_caption_path],
+                    comment_destinations=[ak_comment_path],
+                    last_status="Ready",
+                )
+                prof.pages_data[page_id] = page_obj
+
+                # Feed post 1
+                target_post = posts[0]
+                target_dict = {
+                    "post_num": target_post.post_num,
+                    "video_file": target_post.video_file,
+                    "caption_file": target_post.caption_file,
+                    "comment_file": target_post.comment_file,
+                }
+                transfer_payload(
+                    target_dict,
+                    str(page_video_dir),
+                    [ak_caption_path],
+                    [ak_comment_path],
+                    fanpage_name,
+                    1,
+                )
+                if "_payload_archive" in target_dict:
+                    target_post.archive_dir = target_dict["_payload_archive"]
+
+            prof.status = "✅ Sẵn sàng"
+            logger.info(
+                f"🎉 [MÁY {serial} | {prof.via_tag}] Đã tạo hoàn tất {len(scanned)} kịch bản (1 Page = 1 Script)!"
             )
-
-            page_video_dir = Path(running_base) / page_id
-            page_video_dir.mkdir(parents=True, exist_ok=True)
-
-            page_caption_filename = f"Caption_{page_id}.txt"
-            page_comment_filename = f"Comment_{page_id}.txt"
-            ak_caption_path = str(scripts_files_dest / page_caption_filename)
-            ak_comment_path = str(scripts_files_dest / page_comment_filename)
-
-            final_txt = (
-                txt_tpl.replace("{ID}", page_id)
-                .replace("{PAGE_NAME}", fanpage_name)
-                .replace("{VIDEO_DIR}", str(page_video_dir))
-                .replace("{CAPTION_PATH}", page_caption_filename)
-                .replace("{COMMENT_PATH}", page_comment_filename)
+            return True
+        except Exception as e:
+            prof.status = "❌ Lỗi tạo kịch bản"
+            logger.error(f"Lỗi khi khởi tạo kịch bản cho máy {serial}: {e}", exc_info=True)
+            messagebox.showerror(
+                "Lỗi Khởi Tạo",
+                f"Đã xảy ra lỗi khi tạo kịch bản cho máy {serial}:\n{e}",
             )
-            (scripts_dest / f"{page_id}.txt").write_text(final_txt, encoding="utf-8")
-
-            final_ini = (
-                ini_tpl.replace("{ID}", page_id)
-                .replace("{PAGE_NAME}", fanpage_name)
-                .replace("{VIDEO_DIR}", str(page_video_dir))
-            )
-            (offers_dest / f"{page_id}.ini").write_text(final_ini, encoding="utf-8")
-
-            page_obj = PageInfo(
-                page_id=page_id,
-                folder_name=folder_name,
-                fanpage_name=fanpage_name,
-                total_posts=len(posts),
-                current_idx=1,
-                posts=posts,
-                video_dir=str(page_video_dir),
-                caption_destinations=[ak_caption_path],
-                comment_destinations=[ak_comment_path],
-                last_status="Ready",
-            )
-            prof.pages_data[page_id] = page_obj
-
-            # Feed post 1
-            target_post = posts[0]
-            target_dict = {
-                "post_num": target_post.post_num,
-                "video_file": target_post.video_file,
-                "caption_file": target_post.caption_file,
-                "comment_file": target_post.comment_file,
-            }
-            transfer_payload(
-                target_dict,
-                str(page_video_dir),
-                [ak_caption_path],
-                [ak_comment_path],
-                fanpage_name,
-                1,
-            )
-
-        prof.status = "✅ Sẵn sàng"
-        logger.info(
-            f"🎉 [MÁY {serial} | {prof.via_tag}] Đã tạo hoàn tất {len(scanned)} kịch bản (1 Page = 1 Script)!"
-        )
-        return True
+            return False
 
     def _init_scripts_for_selected_device(self):
         if not self.selected_serial:
