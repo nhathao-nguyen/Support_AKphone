@@ -47,6 +47,18 @@ def test_pair_by_number_not_by_position():
     assert len(problems) == 1 and "v2.mp4" in problems[0]
 
 
+def test_pair_by_post_number_in_real_store_names():
+    # real names: <kind><post number>page<N>fb<via>; the LAST number (via) is the same everywhere
+    videos = [f"vd{i}page1fb1.mp4" for i in (1, 2, 3)]
+    captions = [f"cap{i}page1fb1.txt" for i in (1, 3)]  # post 2 has no caption
+    comments = [f"cmt{i}page1fb1.txt" for i in (1, 2, 3)]
+    posts, problems, mode = pair_posts("page-1", videos, captions, comments)
+    assert mode == "number"
+    assert [p["video"] for p in posts] == ["video/vd1page1fb1.mp4", "video/vd3page1fb1.mp4"]
+    assert posts[1]["caption"] == "caption/cap3page1fb1.txt"
+    assert len(problems) == 1 and "vd2page1fb1.mp4" in problems[0]
+
+
 def test_pair_by_order_only_when_counts_match():
     posts, problems, mode = pair_posts("p", ["a.mp4", "b.mp4"], ["x.txt", "y.txt"], ["m.txt", "n.txt"])
     assert mode == "order" and len(posts) == 2 and not problems

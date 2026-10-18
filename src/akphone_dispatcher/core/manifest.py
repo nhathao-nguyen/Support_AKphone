@@ -41,9 +41,12 @@ def _list_files(folder: Path, extensions: Optional[Tuple[str, ...]]) -> List[str
     return sorted(names, key=natural_sort_key)
 
 
-def _number(name: str) -> Optional[int]:
+def _number(name: str, how: str = "last") -> Optional[int]:
+    """Number inside a file name: the first or the last run of digits of its stem."""
     found = re.findall(r"\d+", Path(name).stem)
-    return int(found[-1]) if found else None
+    if not found:
+        return None
+    return int(found[0] if how == "first" else found[-1])
 
 
 def default_uid(page_name: str, video_name: str) -> str:
@@ -59,19 +62,25 @@ def pair_posts(
     posts: List[Dict[str, str]] = []
     groups = {"video": videos, "caption": captions, "comment": comments}
 
-    def numbered(names: List[str]) -> bool:
-        nums = [_number(n) for n in names]
+    def numbered(names: List[str], how: str) -> bool:
+        nums = [_number(n, how) for n in names]
         return all(v is not None for v in nums) and len(set(nums)) == len(nums)
 
     # Number pairing needs every file to carry a unique number (empty folders are tolerated:
     # the affected posts are then reported as incomplete instead of being paired by position).
-    by_number = bool(videos) and all(numbered(names) for names in groups.values())
+    # Names like "vd2page33fb3.mp4" carry several numbers; the post number is whichever of the
+    # first / last run of digits is unique inside every folder (here the first: 2).
+    how = next(
+        (h for h in ("first", "last") if videos and all(numbered(g, h) for g in groups.values())),
+        None,
+    )
+    by_number = how is not None
 
     if by_number:
-        cap_by = {_number(n): n for n in captions}
-        cmt_by = {_number(n): n for n in comments}
+        cap_by = {_number(n, how): n for n in captions}
+        cmt_by = {_number(n, how): n for n in comments}
         for video in videos:
-            number = _number(video)
+            number = _number(video, how)
             caption, comment = cap_by.get(number), cmt_by.get(number)
             if not caption:
                 problems.append(f"{page_name}: video '{video}' không có caption cùng số {number}.")
