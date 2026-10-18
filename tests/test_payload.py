@@ -1,8 +1,6 @@
 """Unit tests for payload transfers and SHA-256 verification."""
 
-import tempfile
 from pathlib import Path
-import pytest
 from akphone_dispatcher.core.payload import digest, transfer_payload
 
 

@@ -6,7 +6,7 @@ import shutil
 import string
 import sys
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Union
 
 
 def get_app_base_dir() -> Path:
@@ -19,7 +19,7 @@ def get_app_base_dir() -> Path:
     return Path(__file__).resolve().parent.parent.parent.parent
 
 
-def normalize_path(path_val: Optional[str or Path]) -> Path:
+def normalize_path(path_val: Optional[Union[str, Path]]) -> Path:
     """Safely convert any path input into a resolved Path object."""
     if not path_val:
         return Path(".")
@@ -32,7 +32,7 @@ def sanitize_fb_index(value: object, default: str = "1") -> str:
     return cleaned or default
 
 
-def natural_sort_key(s: any) -> List[any]:
+def natural_sort_key(s: object) -> List[Union[int, str]]:
     """Sort strings containing numbers naturally: e.g. vd1, vd2, ..., vd10."""
     return [int(text) if text.isdigit() else text.lower() for text in re.split(r"(\d+)", str(s))]
 
@@ -100,9 +100,7 @@ def find_akphone_root(hint_path: Optional[str] = None) -> Optional[str]:
 
     for drive in get_windows_drives():
         candidate = Path(drive) / "AKPhone"
-        if candidate.is_dir() and (candidate / "SCRIPTS").exists():
-            return str(candidate.resolve())
-        elif candidate.is_dir():
+        if candidate.is_dir():
             return str(candidate.resolve())
 
     base_dir = get_app_base_dir()

@@ -1,11 +1,9 @@
 """Unit tests for multi-device farm profile management and concurrent feeder."""
 
 from unittest.mock import MagicMock, patch
-from pathlib import Path
-import pytest
 from akphone_dispatcher.core.config import AppConfig
-from akphone_dispatcher.core.models import DeviceInfo, DeviceProfile, PageInfo, PostItem
-from akphone_dispatcher.gui.workers.feeder_worker import DeviceFeederWorker, FarmFeederManager
+from akphone_dispatcher.core.models import DeviceProfile, PageInfo
+from akphone_dispatcher.gui.workers.feeder_worker import FarmFeederManager
 from akphone_dispatcher.services.adb_service import AdbService
 from akphone_dispatcher.services.notifier import TelegramNotifier
 from akphone_dispatcher.services.session import SessionManager
@@ -114,7 +112,7 @@ def test_init_scripts_for_device_success(tmp_path):
     prof = DeviceProfile(serial="TEST_SERIAL", fb_index="2")
     app.device_profiles = {"TEST_SERIAL": prof}
 
-    with patch("akphone_dispatcher.gui.app.transfer_payload") as mock_transfer:
+    with patch("akphone_dispatcher.services.farm_service.transfer_payload") as mock_transfer:
         res = AKPhoneApp._init_scripts_for_device(app, "TEST_SERIAL")
         assert res is True
         mock_transfer.assert_called_once()

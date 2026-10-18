@@ -1,6 +1,5 @@
 """Verified atomic payload publisher with integrity verification and automatic recovery."""
 
-from datetime import datetime
 import hashlib
 import json
 import os
@@ -9,7 +8,7 @@ import shutil
 import tempfile
 import threading
 import time
-from typing import Dict, List, Union
+from typing import Any, Dict, List, Union
 import uuid
 
 from akphone_dispatcher.utils.logger import logger
@@ -24,29 +23,6 @@ def digest(path: Union[str, Path]) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             result.update(chunk)
     return result.hexdigest()
-
-
-def mark_payload_posted(archive_dir: Union[str, Path, None]) -> bool:
-    """Flag an archived payload as already posted so retention cleanup may delete it.
-
-    Payloads of posts that are still queued or currently being posted are never flagged,
-    therefore never deleted.
-    """
-    if not archive_dir:
-        return False
-    manifest_path = Path(archive_dir) / "manifest.json"
-    with TRANSFER_LOCK:
-        try:
-            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-            manifest["posted"] = True
-            manifest["posted_at"] = time.time()
-            temporary = manifest_path.with_suffix(".tmp")
-            temporary.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
-            os.replace(temporary, manifest_path)
-            return True
-        except Exception as e:
-            logger.warning(f"Không thể đánh dấu bài đã đăng cho {archive_dir}: {e}")
-            return False
 
 
 def mark_payload_posted(archive_dir: Union[str, Path, None]) -> bool:
@@ -167,7 +143,7 @@ def recover_pending(running_root: Union[str, Path], source_root: Union[str, Path
 
 
 def transfer_payload(
-    post: Dict[str, any],
+    post: Dict[str, Any],
     video_dir: Union[str, Path],
     caption_destinations: List[Union[str, Path]],
     comment_destinations: List[Union[str, Path]],
@@ -212,14 +188,9 @@ def transfer_payload(
             raise ValueError("Caption/comment không được nằm trong folder video đang chạy.")
 
         hashes = {key: digest(path) for key, path in sources.items()}
-        reused = bool(post.get("_payload_archive"))
-        store = (
-            Path(post["_payload_archive"])
-            if reused
-            else directory.parent / ".payload-store" / directory.name / uuid.uuid4().hex
-        )
+        store = directory.parent / ".payload-store" / directory.name / uuid.uuid4().hex
         store.mkdir(parents=True, exist_ok=True)
-        raw = sources if reused else {key: store / key / sources[key].name for key in sources}
+        raw = {key: store / key / sources[key].name for key in sources}
         manifest_path = store / "manifest.json"
 
         manifest = {
@@ -231,8 +202,6 @@ def transfer_payload(
         }
 
         def save_state(state: str):
-            if reused:
-                return
             manifest["state"] = state
             if state == "complete":
                 manifest["completed_at"] = time.time()
@@ -244,12 +213,11 @@ def transfer_payload(
 
         save_state("preparing")
 
-        if not reused:
-            for key, path in sources.items():
-                raw[key].parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(path, raw[key])
-                if digest(raw[key]) != hashes[key]:
-                    raise ValueError("Bản sao chép không khớp hash nguồn; giữ nguyên kho bài.")
+        for key, path in sources.items():
+            raw[key].parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(path, raw[key])
+            if digest(raw[key]) != hashes[key]:
+                raise ValueError("Bản sao chép không khớp hash nguồn; giữ nguyên kho bài.")
 
         # Normalize caption & comment text (flatten newlines for AKPhone compatibility)
         caption = (
@@ -320,13 +288,12 @@ def transfer_payload(
 
                 save_state("published")
 
-                if not reused:
-                    if any(digest(sources[key]) != hashes[key] for key in sources):
-                        raise ValueError("Nguồn thay đổi bất thường; giữ nguyên kho bài.")
-                    for key, path in sources.items():
-                        path.unlink()
-                        removed.append(key)
-                    save_state("complete")
+                if any(digest(sources[key]) != hashes[key] for key in sources):
+                    raise ValueError("Nguồn thay đổi bất thường; giữ nguyên kho bài.")
+                for key, path in sources.items():
+                    path.unlink()
+                    removed.append(key)
+                save_state("complete")
 
                 post.update({key: str(path) for key, path in raw.items()})
                 post["_payload_archive"] = str(store)

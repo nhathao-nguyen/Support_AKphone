@@ -5,7 +5,6 @@ from akphone_dispatcher.core.models import (
     DeviceInfo,
     PageInfo,
     PostItem,
-    RoundState,
     TelegramConfig,
 )
 from akphone_dispatcher.core.payload import digest, recover_pending, transfer_payload
@@ -16,7 +15,6 @@ __all__ = [
     "PostItem",
     "PageInfo",
     "DeviceInfo",
-    "RoundState",
     "TelegramConfig",
     "digest",
     "recover_pending",

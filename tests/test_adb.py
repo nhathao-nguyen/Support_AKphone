@@ -1,7 +1,6 @@
 """Unit tests for ADB service device query and target resolution."""
 
 from unittest.mock import MagicMock, patch
-import pytest
 from akphone_dispatcher.core.models import DeviceInfo
 from akphone_dispatcher.services.adb_service import AdbService
 

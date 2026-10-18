@@ -1,7 +1,5 @@
 """Unit tests for scanner and page mapping parsing."""
 
-from pathlib import Path
-import pytest
 from akphone_dispatcher.core.scanner import parse_page_names_mapping, scan_source_directory
 
 

@@ -1,9 +1,7 @@
 """Unit tests for helpers and dynamic path discovery."""
 
 from pathlib import Path
-import pytest
 from akphone_dispatcher.utils.helpers import (
-    find_adb_executable,
     get_windows_drives,
     natural_sort_key,
     normalize_path,

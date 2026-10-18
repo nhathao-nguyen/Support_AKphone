@@ -12,10 +12,13 @@
 
 ```
 [ Giao Diện Người Dùng (GUI Layer) ]
+  ├── app.py (cửa sổ chính) + tabs/ (mỗi tab một mixin)
+  └── workers/ (FeederWorker chạy nền cho từng máy)
         |
         v
 [ Dịch Vụ Nền Tảng (Services Layer) ]
   ├── AdbService (ADB Daemon, Screencap, Watchdog)
+  ├── FarmService (khởi tạo script cho máy, khôi phục phiên - không phụ thuộc GUI)
   ├── TelegramNotifier (Async Webhook Alerts)
   └── SessionManager (Disk State Recovery)
         |

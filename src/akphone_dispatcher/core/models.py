@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set
+from typing import Dict, List, Optional, Set
 
 
 @dataclass
@@ -13,7 +13,6 @@ class PostItem:
     video_file: str
     caption_file: str = ""
     comment_file: str = ""
-    archive_dir: Optional[str] = None
 
     def is_valid(self) -> bool:
         return bool(self.video_file and Path(self.video_file).is_file())
@@ -91,19 +90,6 @@ class DeviceProfile:
         if not self.pages_data:
             return "0/0"
         return f"{self.completed_pages}/{self.total_pages} xong"
-
-
-@dataclass
-class RoundState:
-    """Tracking structure for a single cycle across active pages on a device."""
-
-    round_number: int = 1
-    active_round_pages: List[str] = field(default_factory=list)
-    current_round_flags: Set[str] = field(default_factory=set)
-    round_succeeded: Set[str] = field(default_factory=set)
-    round_failed: Set[str] = field(default_factory=set)
-    sentinel_active: bool = False
-    start_time: float = 0.0
 
 
 @dataclass

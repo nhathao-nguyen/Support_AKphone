@@ -10,7 +10,6 @@ from akphone_dispatcher.utils.helpers import (
     find_adb_executable,
     find_akphone_root,
     get_app_base_dir,
-    normalize_path,
 )
 from akphone_dispatcher.utils.logger import logger
 
@@ -29,10 +28,8 @@ class AppConfig:
         self.akphone_dir: str = find_akphone_root() or ""
         self.adb_path: str = find_adb_executable() or ""
         self.running_dir: str = ""
-        self.m_index: str = "1"
         self.check_interval: float = 2.0
         self.page_names: str = "page-1: Reel of Life\npage-2: Behind Closed Doors"
-        self.target_device: str = "auto"
         self.watchdog_timeout: int = 360
         self.auto_screencap: bool = True
         self.auto_clean_storage: bool = True
@@ -59,13 +56,13 @@ class AppConfig:
 
     def _resolve_template_path(self, filename: str) -> Path:
         candidates = [
-            self.base_dir / filename,
             self.base_dir / "assets" / filename,
+            self.base_dir / filename,
         ]
         for c in candidates:
             if c.is_file():
                 return c.resolve()
-        return (self.base_dir / filename).resolve()
+        return (self.base_dir / "assets" / filename).resolve()
 
     def get_profile(self, serial: str, default_fb_idx: str = "1") -> Dict[str, Any]:
         """Retrieve profile dict for a specific device serial or create a dynamic default."""
@@ -122,10 +119,8 @@ class AppConfig:
             self.akphone_dir = data.get("akphone_dir", self.akphone_dir)
             self.adb_path = data.get("adb_path", self.adb_path)
             self.running_dir = data.get("running_dir", self.running_dir)
-            self.m_index = str(data.get("m_index", self.m_index))
             self.check_interval = float(data.get("check_interval", self.check_interval))
             self.page_names = data.get("page_names", self.page_names)
-            self.target_device = data.get("target_device", self.target_device)
             self.watchdog_timeout = int(data.get("watchdog_timeout", self.watchdog_timeout))
             self.auto_screencap = bool(data.get("auto_screencap", self.auto_screencap))
             self.auto_clean_storage = bool(data.get("auto_clean_storage", self.auto_clean_storage))
@@ -176,10 +171,8 @@ class AppConfig:
             "akphone_dir": self.akphone_dir,
             "adb_path": self.adb_path,
             "running_dir": self.running_dir,
-            "m_index": self.m_index,
             "check_interval": str(self.check_interval),
             "page_names": self.page_names,
-            "target_device": self.target_device,
             "watchdog_timeout": self.watchdog_timeout,
             "auto_screencap": self.auto_screencap,
             "auto_clean_storage": self.auto_clean_storage,
@@ -199,12 +192,5 @@ class AppConfig:
             self.config_path.parent.mkdir(parents=True, exist_ok=True)
             with open(self.config_path, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=4)
-
-            # Sync to root app_settings.json for backward compatibility (only if standard configs path)
-            root_cfg = self.base_dir / "app_settings.json"
-            standard_cfg = self.base_dir / "configs" / "app_settings.json"
-            if self.config_path == standard_cfg and root_cfg.is_file():
-                with open(root_cfg, "w", encoding="utf-8") as f:
-                    json.dump(data, f, ensure_ascii=False, indent=4)
         except Exception as e:
             logger.error(f"Không thể lưu cấu hình ra file: {e}")

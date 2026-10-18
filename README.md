@@ -48,7 +48,7 @@ Support_AKphone/
 │   └── workflows/
 │       ├── ci.yml                 # CI: Tự động chạy Lint (Ruff) và Test (Pytest) trên Windows/Linux
 │       └── build.yml              # CI/CD: Tự động đóng gói file .exe và xuất Release trên GitHub
-├── assets/                        # Kịch bản mẫu & cấu hình gốc
+├── assets/                        # Kịch bản mẫu & cấu hình gốc (nơi duy nhất chứa template)
 │   ├── template_script.txt
 │   └── template_config.ini
 ├── configs/                       # Cấu hình người dùng & lưu vết phiên chạy
@@ -64,11 +64,13 @@ Support_AKphone/
 │       │   ├── payload.py         # Cắt bài an toàn, SHA-256 checksum & rollback
 │       │   └── scanner.py         # Quét kho bài, tự động ghép video + caption + cmt
 │       ├── services/              # Các dịch vụ nền tảng
+│       │   ├── farm_service.py    # Khởi tạo script/kho bài cho từng máy, khôi phục phiên (không phụ thuộc GUI)
 │       │   ├── adb_service.py     # Giao tiếp ADB, quét thiết bị, chụp màn hình, dọn rác
 │       │   ├── notifier.py        # Gửi thông báo và ảnh lỗi qua Telegram Webhook
 │       │   └── session.py         # Lưu và khôi phục phiên làm việc khi tắt tool
 │       ├── gui/                   # Giao diện CustomTkinter
-│       │   ├── app.py             # Cửa sổ chính, điều khiển Tabview
+│       │   ├── app.py             # Cửa sổ chính: khởi tạo dịch vụ, header, log, quét thiết bị
+│       │   ├── tabs/              # Mỗi tab một mixin: farm_tab, progress_tab, template_tab, settings_tab
 │       │   └── workers/           # Luồng giám sát chạy ngầm (FeederWorker)
 │       └── utils/                 # Tiện ích chung
 │           ├── helpers.py         # Sắp xếp tự nhiên (natural sort), chuẩn hóa path

@@ -3,7 +3,6 @@
 import json
 from pathlib import Path
 import threading
-from typing import Optional
 import urllib.parse
 import urllib.request
 
@@ -47,7 +46,7 @@ class TelegramNotifier:
             req = urllib.request.Request(
                 url, data=payload, headers={"Content-Type": "application/json"}
             )
-            with urllib.request.urlopen(req, timeout=10) as response:
+            with urllib.request.urlopen(req, timeout=10):
                 pass
         except Exception as e:
             logger.warning(f"Không thể gửi thông báo Telegram: {e}")
@@ -94,7 +93,7 @@ class TelegramNotifier:
                 data=body,
                 headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
             )
-            with urllib.request.urlopen(req, timeout=15) as response:
+            with urllib.request.urlopen(req, timeout=15):
                 pass
         except Exception as e:
             logger.warning(f"Không thể gửi ảnh Telegram: {e}")

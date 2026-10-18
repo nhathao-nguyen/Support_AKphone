@@ -1,7 +1,6 @@
 """Thread-safe application logger with GUI listeners and rotating file handler."""
 
 from datetime import datetime
-import os
 from pathlib import Path
 import threading
 from typing import Callable, List, Optional

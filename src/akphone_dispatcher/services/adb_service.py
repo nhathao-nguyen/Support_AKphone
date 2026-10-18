@@ -1,12 +1,10 @@
 """Dynamic ADB service with direct Socket Protocol (TCP 5037) and device watchdog."""
 
-from datetime import datetime
 import os
 from pathlib import Path
 import socket
 import subprocess
-import time
-from typing import Dict, List, Optional, Set, Tuple
+from typing import List, Optional, Set, Tuple
 
 from akphone_dispatcher.core.models import DeviceInfo
 from akphone_dispatcher.utils.logger import logger

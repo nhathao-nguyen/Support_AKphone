@@ -318,3 +318,19 @@ def test_round_waits_for_round_done_before_ending():
     worker_ref.append((worker, adb))
     _run_until(worker, lambda: calls["n"] >= 9)
     assert init_counts and all(c == 1 for c in init_counts)  # no premature next round
+
+
+# ---- 10. invalid numeric settings never leave a half-applied config ----
+def test_save_settings_rejects_bad_number_without_side_effects():
+    import akphone_dispatcher.gui.tabs.settings_tab as st
+
+    gui = MagicMock()
+    gui.entry_watchdog_timeout.get.return_value = "abc"
+    gui.entry_retention_days.get.return_value = "0"
+    gui.entry_running_dir.get.return_value = "changed"
+    gui.config.running_dir = "KEEP"
+    with patch.object(st.messagebox, "showerror") as err:
+        st.SettingsTabMixin._save_system_settings(gui)
+        err.assert_called_once()
+    assert gui.config.running_dir == "KEEP"
+    gui.config.save.assert_not_called()

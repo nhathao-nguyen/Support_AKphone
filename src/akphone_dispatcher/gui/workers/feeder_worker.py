@@ -1,7 +1,6 @@
 """Multi-device concurrent worker and farm orchestration manager."""
 
 from datetime import datetime
-from pathlib import Path
 import random
 import threading
 import time
@@ -96,7 +95,6 @@ class DeviceFeederWorker:
                 "video_file": target_post.video_file,
                 "caption_file": target_post.caption_file,
                 "comment_file": target_post.comment_file,
-                "_payload_archive": getattr(target_post, "archive_dir", None),
             }
             archive = transfer_payload(
                 target_dict,
@@ -179,10 +177,13 @@ class DeviceFeederWorker:
             f"• Lý do: {reason}\n"
             f"• Watchdog đã kích hoạt tự phục hồi trên máy này."
         )
-        self.notifier.send_message(msg)
-
-        if self.config.auto_screencap and screencap_file.is_file():
-            self.notifier.send_photo(screencap_file, caption=f"Màn hình lỗi {self.serial} - {pid}")
+        tg = self.config.telegram
+        if tg.notify_on_error:
+            self.notifier.send_message(msg)
+            if tg.send_screenshots and self.config.auto_screencap and screencap_file.is_file():
+                self.notifier.send_photo(
+                    screencap_file, caption=f"Màn hình lỗi {self.serial} - {pid}"
+                )
 
         # Watchdog healing on this phone
         self.adb.force_stop_facebook(self.serial)
@@ -397,7 +398,7 @@ class DeviceFeederWorker:
                         retention_days = getattr(self.config, "payload_retention_days", 0)
                         clean_completed_payloads(self.config.running_dir, max_age_days=retention_days)
 
-                    if self.config.telegram.enabled:
+                    if self.config.telegram.enabled and self.config.telegram.notify_on_success:
                         round_msg = (
                             f"🏁 <b>[VÒNG {self.round_number} - {self.profile.via_tag}]</b>\n"
                             f"• Thiết bị: <code>{self.serial}</code>\n"

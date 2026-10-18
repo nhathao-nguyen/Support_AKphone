@@ -28,9 +28,6 @@ jobs:
       - name: Build with PyInstaller
         run: |
           python -m PyInstaller --noconfirm --distpath dist --workpath build AKPhone_Dispatcher_Recovered.spec
-          Copy-Item app_settings.json dist/ -Force
-          Copy-Item template_script.txt dist/ -Force
-          Copy-Item template_config.ini dist/ -Force
           if (Test-Path configs) { Copy-Item configs dist/configs -Recurse -Force }
           if (Test-Path assets) { Copy-Item assets dist/assets -Recurse -Force }
 

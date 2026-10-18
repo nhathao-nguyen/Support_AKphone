@@ -2,11 +2,10 @@
 
 from datetime import datetime
 import json
-import os
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from akphone_dispatcher.core.models import DeviceProfile, PageInfo
+from akphone_dispatcher.core.models import DeviceProfile
 from akphone_dispatcher.utils.helpers import get_app_base_dir
 from akphone_dispatcher.utils.logger import logger
 

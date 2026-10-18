@@ -2,10 +2,9 @@
 
 import os
 from pathlib import Path
-import re
 from typing import Dict, List
 
-from akphone_dispatcher.core.models import PageInfo, PostItem
+from akphone_dispatcher.core.models import PostItem
 from akphone_dispatcher.core.payload import recover_pending
 from akphone_dispatcher.utils.helpers import natural_sort_key
 from akphone_dispatcher.utils.logger import logger
