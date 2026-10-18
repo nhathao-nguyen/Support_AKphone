@@ -27,6 +27,10 @@ class AppConfig:
         # Global system paths (zero hardcoding, no C: fallback)
         self.source_dir: str = ""
         self.akphone_dir: str = find_akphone_root() or ""
+        # Optional overrides for AKPhone builds with a different layout (e.g. AKPhoneS)
+        self.scripts_dir: str = ""
+        self.offers_dir: str = ""
+        self.write_offers: bool = True
         self.adb_path: str = find_adb_executable() or ""
         self.running_dir: str = ""
         self.check_interval: float = 2.0
@@ -123,6 +127,9 @@ class AppConfig:
 
             self.source_dir = data.get("source_dir", self.source_dir)
             self.akphone_dir = data.get("akphone_dir", self.akphone_dir)
+            self.scripts_dir = str(data.get("scripts_dir", self.scripts_dir))
+            self.offers_dir = str(data.get("offers_dir", self.offers_dir))
+            self.write_offers = bool(data.get("write_offers", self.write_offers))
             self.adb_path = data.get("adb_path", self.adb_path)
             self.running_dir = data.get("running_dir", self.running_dir)
             self.check_interval = float(data.get("check_interval", self.check_interval))
@@ -178,6 +185,9 @@ class AppConfig:
         data = {
             "source_dir": self.source_dir,
             "akphone_dir": self.akphone_dir,
+            "scripts_dir": self.scripts_dir,
+            "offers_dir": self.offers_dir,
+            "write_offers": self.write_offers,
             "adb_path": self.adb_path,
             "running_dir": self.running_dir,
             "check_interval": str(self.check_interval),

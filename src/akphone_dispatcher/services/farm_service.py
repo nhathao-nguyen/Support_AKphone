@@ -6,7 +6,7 @@ The GUI only calls these functions and shows a dialog when ``ProvisionError`` is
 import os
 from pathlib import Path
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from akphone_dispatcher.core.config import AppConfig
 from akphone_dispatcher.core.ledger import Ledger, PostStatus
@@ -64,8 +64,24 @@ def page_id_for(folder_name: str, via: str) -> str:
     return f"page{number}fb{via}"
 
 
+def ak_paths(config: AppConfig) -> Tuple[Path, Path, Optional[Path]]:
+    """Where scripts, their FILES folder and offer .ini files go for the configured AKPhone.
+
+    Classic AKPhone keeps ``<root>/SCRIPTS`` and ``<root>/OFFERS``. Other builds (for example
+    AKPhoneS: ``<root>/assets/SCRIPTS``) can override the folders in the settings; offers can be
+    switched off with ``write_offers = False`` for builds that do not use ``.ini`` files.
+    """
+    scripts = Path(config.scripts_dir) if config.scripts_dir else Path(config.akphone_dir) / "SCRIPTS"
+    offers = None
+    if config.write_offers:
+        offers = Path(config.offers_dir) if config.offers_dir else Path(config.akphone_dir) / "OFFERS"
+    return scripts, scripts / "FILES", offers
+
+
 def _require_dirs(profile: DeviceProfile, config: AppConfig, serial: str) -> str:
     ak_dir = config.akphone_dir
+    if config.scripts_dir and os.path.isdir(os.path.dirname(os.path.normpath(config.scripts_dir))):
+        ak_dir = os.path.dirname(os.path.normpath(config.scripts_dir))
     if not ak_dir or not os.path.isdir(ak_dir):
         logger.error(f"Thư mục AKPhone chưa được cấu hình hoặc không tồn tại: {ak_dir}")
         raise ProvisionError(
@@ -101,11 +117,11 @@ def provision_device(
     """
     src_dir = _require_dirs(profile, config, serial)
 
-    scripts_dest = Path(config.akphone_dir) / "SCRIPTS"
-    offers_dest = Path(config.akphone_dir) / "OFFERS"
-    scripts_files_dest = scripts_dest / "FILES"
+    scripts_dest, scripts_files_dest, offers_dest = ak_paths(config)
     running_base = Path(config.running_dir)
     for folder in (scripts_dest, offers_dest, scripts_files_dest, running_base):
+        if folder is None:
+            continue
         folder.mkdir(parents=True, exist_ok=True)
 
     scanned = scan_source_directory(src_dir, str(running_base))
@@ -191,7 +207,8 @@ def provision_device(
                 .replace("{PAGE_NAME}", fanpage_name)
                 .replace("{VIDEO_DIR}", str(page_video_dir))
             )
-            (offers_dest / f"{page_id}.ini").write_text(offer, encoding="utf-8")
+            if offers_dest is not None:
+                (offers_dest / f"{page_id}.ini").write_text(offer, encoding="utf-8")
 
             page = PageInfo(
                 page_id=page_id,
@@ -262,7 +279,7 @@ def restore_farm_session(
     ledger: Optional[Ledger] = None,
 ) -> int:
     """Rebuild page state of connected devices from a saved session. Returns devices restored."""
-    scripts_files_dest = Path(config.akphone_dir) / "SCRIPTS" / "FILES"
+    _, scripts_files_dest, _ = ak_paths(config)
     restored_devices = 0
     for serial, data in session.get("devices", {}).items():
         profile = profiles.get(serial)

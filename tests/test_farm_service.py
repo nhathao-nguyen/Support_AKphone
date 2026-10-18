@@ -142,3 +142,28 @@ def test_provision_without_comment_template_still_works(tmp_path):
     prof = DeviceProfile(serial="S", fb_index="1", source_dir=str(_make_source(tmp_path)))
     assert provision_device(prof, cfg, "S") == 1
     assert not list((tmp_path / "ak" / "SCRIPTS").glob("cmtcmt*.txt"))
+
+
+def test_custom_scripts_dir_and_no_offers(tmp_path):
+    """AKPhoneS-style layout: scripts in <root>/assets/SCRIPTS and no OFFERS folder at all."""
+    cfg = _config(tmp_path)
+    assets = tmp_path / "AKPhoneS" / "assets"
+    assets.mkdir(parents=True)
+    cfg.akphone_dir = str(tmp_path / "AKPhoneS")
+    cfg.scripts_dir = str(assets / "SCRIPTS")
+    cfg.write_offers = False
+    prof = DeviceProfile(serial="S", fb_index="zz", source_dir=str(_make_source(tmp_path)))
+    provision_device(prof, cfg, "S")
+    assert (assets / "SCRIPTS" / "page1fbzz.txt").is_file()
+    assert (assets / "SCRIPTS" / "cmtcmtpage1fbzz.txt").is_file()
+    assert (assets / "SCRIPTS" / "FILES" / "Caption_page1fbzz.txt").is_file()
+    assert not (tmp_path / "AKPhoneS" / "OFFERS").exists()
+    assert not (tmp_path / "ak" / "SCRIPTS").exists()  # nothing leaked to the default location
+
+
+def test_scripts_dir_overrides_persist(tmp_path):
+    cfg = _config(tmp_path)
+    cfg.scripts_dir, cfg.offers_dir, cfg.write_offers = "X:/a/SCRIPTS", "X:/a/OFFERS", False
+    cfg.save()
+    again = AppConfig(tmp_path / "cfg.json")
+    assert (again.scripts_dir, again.offers_dir, again.write_offers) == ("X:/a/SCRIPTS", "X:/a/OFFERS", False)
