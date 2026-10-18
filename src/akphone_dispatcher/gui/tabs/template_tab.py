@@ -25,7 +25,8 @@ class TemplateTabMixin:
             text=(
                 "💡 TÙY BIẾN KỊCH BẢN ĐỘNG:\n"
                 "• Mẫu kịch bản dùng chung cho toàn bộ dàn máy: template_script.txt & template_config.ini.\n"
-                "• Biến thay thế tự động theo từng máy/via: {ID} (vd page1fb1, page1fb2), {PAGE_NAME}, {VIDEO_DIR}, {CAPTION_PATH}, {COMMENT_PATH}."
+                "• Biến thay thế tự động theo từng máy/via: {ID} (vd page1fb1, page1fb2), {PAGE_NAME}, {VIDEO_DIR}, {CAPTION_PATH}, {COMMENT_PATH}.\n"
+                "• Biến cho phần comment: {LINK_PATH}, {CMT_MARKER}, {CMT_SCRIPT}, {CMT_MARKER_PATH}."
             ),
             font=ctk.CTkFont(size=12),
             text_color="#38bdf8",
@@ -37,12 +38,16 @@ class TemplateTabMixin:
 
         t_txt = sub_tab.add("Kịch Bản .TXT (template_script.txt)")
         t_ini = sub_tab.add("Cấu Hình .INI (template_config.ini)")
+        t_cmt = sub_tab.add("Kịch Bản Comment (template_cmt_script.txt)")
 
         self.tpl_txt_edit = ctk.CTkTextbox(t_txt, font=ctk.CTkFont(family="Consolas", size=12))
         self.tpl_txt_edit.pack(fill="both", expand=True, padx=6, pady=6)
 
         self.tpl_ini_edit = ctk.CTkTextbox(t_ini, font=ctk.CTkFont(family="Consolas", size=12))
         self.tpl_ini_edit.pack(fill="both", expand=True, padx=6, pady=6)
+
+        self.tpl_cmt_edit = ctk.CTkTextbox(t_cmt, font=ctk.CTkFont(family="Consolas", size=12))
+        self.tpl_cmt_edit.pack(fill="both", expand=True, padx=6, pady=6)
 
         self._load_templates_to_ui()
 
@@ -76,6 +81,9 @@ class TemplateTabMixin:
         self.tpl_txt_edit.insert("1.0", txt_content)
         self.tpl_ini_edit.delete("1.0", "end")
         self.tpl_ini_edit.insert("1.0", ini_content)
+        cmt_path = self.config.template_cmt_path
+        self.tpl_cmt_edit.delete("1.0", "end")
+        self.tpl_cmt_edit.insert("1.0", cmt_path.read_text(encoding="utf-8") if cmt_path.is_file() else "")
 
     def _save_templates_from_ui(self):
         txt_content = self.tpl_txt_edit.get("1.0", "end-1c")
@@ -83,6 +91,9 @@ class TemplateTabMixin:
         try:
             self.config.template_txt_path.write_text(txt_content, encoding="utf-8")
             self.config.template_ini_path.write_text(ini_content, encoding="utf-8")
+            self.config.template_cmt_path.write_text(
+                self.tpl_cmt_edit.get("1.0", "end-1c"), encoding="utf-8"
+            )
             messagebox.showinfo("Đã Lưu Mẫu", "Đã lưu kịch bản mẫu ra file thành công!")
         except Exception as e:
             messagebox.showerror("Lỗi", f"Không thể lưu file mẫu: {e}")

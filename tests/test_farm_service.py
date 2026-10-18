@@ -35,6 +35,7 @@ def _config(root: Path) -> AppConfig:
     cfg.running_dir = str(root / "run")
     cfg.template_txt_path = Path("assets/template_script.txt")
     cfg.template_ini_path = Path("assets/template_config.ini")
+    cfg.template_cmt_path = Path("assets/template_cmt_script.txt")
     return cfg
 
 
@@ -96,3 +97,48 @@ def test_restore_session_realigns_posts(tmp_path):
     assert (page.current_idx, page.total_posts) == (3, 5)
     assert Path(page.posts[3].video_file).name == "v4.mp4"
     assert Path(page.posts[4].video_file).name == "v5.mp4"
+
+
+def test_generated_scripts_use_real_templates_and_leave_no_placeholder(tmp_path):
+    import re
+
+    cfg = _config(tmp_path)
+    prof = DeviceProfile(serial="S", fb_index="zz", source_dir=str(_make_source(tmp_path)))
+    provision_device(prof, cfg, "S")
+    scripts = tmp_path / "ak" / "SCRIPTS"
+    post = (scripts / "page1fbzz.txt").read_text(encoding="utf-8")
+    cmt = (scripts / "cmtcmtpage1fbzz.txt").read_text(encoding="utf-8")
+
+    for name, text in (("post", post), ("comment", cmt)):
+        assert not re.findall(r"\{[A-Z_]+\}", text), f"unreplaced placeholder in {name} script"
+
+    run_dir = str(tmp_path / "run" / "page1fbzz")
+    assert f"PUSH_FILE={run_dir}|" in post  # {VIDEO_DIR}, not a hard-coded drive
+    assert "REMOVE=/storage/emulated/0/Android/Done/page1fbzz.txt" in post
+    # tail: the page only looks for ITS OWN comment marker, then runs its own comment script
+    assert "cmtpage1fbzz|5|cmtcmtpage1fbzz.txt|CONTINUE" in post
+    assert "pagePAGE" not in post and "page2fbzz" not in post
+    # the comment script reads this page's files and removes its marker when done
+    assert "OPENLINK_FROMFILE=Link_page1fbzz.txt" in cmt
+    assert "GETDATA_RANDOM_NO_REMOVE=Comment_page1fbzz.txt" in cmt
+    assert cmt.rstrip().splitlines()[-2] == "REMOVE=/storage/emulated/0/Cmt/cmtpage1fbzz.txt"
+    assert (tmp_path / "ak" / "SCRIPTS" / "FILES" / "Link_page1fbzz.txt").is_file()
+
+
+def test_comment_marker_dir_is_configurable_and_persisted(tmp_path):
+    cfg = _config(tmp_path)
+    cfg.comment_marker_dir = "/sdcard/MyCmt/"
+    prof = DeviceProfile(serial="S", fb_index="1", source_dir=str(_make_source(tmp_path)))
+    provision_device(prof, cfg, "S")
+    cmt = (tmp_path / "ak" / "SCRIPTS" / "cmtcmtpage1fb1.txt").read_text(encoding="utf-8")
+    assert "REMOVE=/sdcard/MyCmt/cmtpage1fb1.txt" in cmt
+    cfg.save()
+    assert AppConfig(tmp_path / "cfg.json").comment_marker_dir == "/sdcard/MyCmt/"
+
+
+def test_provision_without_comment_template_still_works(tmp_path):
+    cfg = _config(tmp_path)
+    cfg.template_cmt_path = tmp_path / "missing.txt"
+    prof = DeviceProfile(serial="S", fb_index="1", source_dir=str(_make_source(tmp_path)))
+    assert provision_device(prof, cfg, "S") == 1
+    assert not list((tmp_path / "ak" / "SCRIPTS").glob("cmtcmt*.txt"))

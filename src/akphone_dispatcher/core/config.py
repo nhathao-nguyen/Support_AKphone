@@ -22,6 +22,7 @@ class AppConfig:
         self.config_path = self._resolve_config_path(config_path)
         self.template_txt_path = self._resolve_template_path("template_script.txt")
         self.template_ini_path = self._resolve_template_path("template_config.ini")
+        self.template_cmt_path = self._resolve_template_path("template_cmt_script.txt")
 
         # Global system paths (zero hardcoding, no C: fallback)
         self.source_dir: str = ""
@@ -35,6 +36,8 @@ class AppConfig:
         self.auto_clean_storage: bool = True
         self.auto_clean_payloads: bool = True
         self.payload_retention_days: int = 0
+        # Phone folder where the tool drops "cmt<ID>.txt" markers (= a comment job for that page)
+        self.comment_marker_dir: str = "/storage/emulated/0/Cmt"
         self.telegram = TelegramConfig()
 
         # Multi-Device Profiles mapping: serial -> {fb_index, source_dir, page_names, enabled}
@@ -130,6 +133,7 @@ class AppConfig:
             self.payload_retention_days = int(
                 data.get("payload_retention_days", self.payload_retention_days)
             )
+            self.comment_marker_dir = str(data.get("comment_marker_dir", self.comment_marker_dir))
 
             # Multi-device profiles
             self.device_profiles = data.get("device_profiles", {})
@@ -178,6 +182,7 @@ class AppConfig:
             "auto_clean_storage": self.auto_clean_storage,
             "auto_clean_payloads": self.auto_clean_payloads,
             "payload_retention_days": self.payload_retention_days,
+            "comment_marker_dir": self.comment_marker_dir,
             "device_profiles": self.device_profiles,
             "telegram": {
                 "bot_token": self.telegram.bot_token,

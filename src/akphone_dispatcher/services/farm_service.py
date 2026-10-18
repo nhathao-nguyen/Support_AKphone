@@ -30,6 +30,24 @@ class ProvisionError(Exception):
         self.message = message
 
 
+def render_template(template: str, values: Dict[str, str]) -> str:
+    """Replace every ``{KEY}`` of ``values`` in a script/ini template."""
+    for key, value in values.items():
+        template = template.replace("{" + key + "}", value)
+    return template
+
+
+def comment_names(page_id: str, marker_dir: str) -> Dict[str, str]:
+    """Names shared by the posting script, the comment script and the tool for one page."""
+    marker = f"cmt{page_id}"
+    return {
+        "CMT_MARKER": marker,  # entry the tool creates on the phone = "this page has a comment"
+        "CMT_SCRIPT": f"cmt{marker}.txt",  # sub-script AKPhone runs when the marker is found
+        "CMT_MARKER_PATH": f"{marker_dir.rstrip('/')}/{marker}.txt",
+        "LINK_PATH": f"Link_{page_id}.txt",
+    }
+
+
 def page_id_for(folder_name: str, via: str) -> str:
     """Build the page id (e.g. ``page1fbabc``) from a source folder name and Via tag."""
     match = re.search(r"\d+", folder_name)
@@ -91,6 +109,11 @@ def provision_device(
     page_names_map = parse_page_names_mapping(profile.page_names or config.page_names)
     txt_tpl = config.template_txt_path.read_text(encoding="utf-8")
     ini_tpl = config.template_ini_path.read_text(encoding="utf-8")
+    cmt_tpl = (
+        config.template_cmt_path.read_text(encoding="utf-8")
+        if config.template_cmt_path.is_file()
+        else ""
+    )
 
     via = sanitize_fb_index(profile.fb_index)
     profile.fb_index = via
@@ -133,14 +156,26 @@ def provision_device(
             ak_caption_path = str(scripts_files_dest / caption_name)
             ak_comment_path = str(scripts_files_dest / comment_name)
 
-            script = (
-                txt_tpl.replace("{ID}", page_id)
-                .replace("{PAGE_NAME}", fanpage_name)
-                .replace("{VIDEO_DIR}", str(page_video_dir))
-                .replace("{CAPTION_PATH}", caption_name)
-                .replace("{COMMENT_PATH}", comment_name)
+            names = comment_names(page_id, config.comment_marker_dir)
+            values = {
+                "ID": page_id,
+                "PAGE_NAME": fanpage_name,
+                "VIDEO_DIR": str(page_video_dir),
+                "CAPTION_PATH": caption_name,
+                "COMMENT_PATH": comment_name,
+                **names,
+            }
+            (scripts_dest / f"{page_id}.txt").write_text(
+                render_template(txt_tpl, values), encoding="utf-8"
             )
-            (scripts_dest / f"{page_id}.txt").write_text(script, encoding="utf-8")
+            if cmt_tpl:
+                # comment sub-script + an (initially empty) link file it will read
+                (scripts_dest / names["CMT_SCRIPT"]).write_text(
+                    render_template(cmt_tpl, values), encoding="utf-8"
+                )
+                link_file = scripts_files_dest / names["LINK_PATH"]
+                if not link_file.exists():
+                    link_file.write_text("", encoding="utf-8")
 
             offer = (
                 ini_tpl.replace("{ID}", page_id)
