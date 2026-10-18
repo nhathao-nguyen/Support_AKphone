@@ -359,7 +359,7 @@ class FarmTabMixin:
         if prof.enabled and self._warn_duplicate_fb_index():
             return False
         try:
-            provision_device(prof, self.config, serial)
+            provision_device(prof, self.config, serial, ledger=self.ledger)
         except ProvisionError as err:
             messagebox.showerror(err.title, err.message)
             return False

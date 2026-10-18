@@ -13,6 +13,7 @@ class PostItem:
     video_file: str
     caption_file: str = ""
     comment_file: str = ""
+    uid: str = ""  # stable id (manifest uid or "<page>/<video stem>")
 
     def is_valid(self) -> bool:
         return bool(self.video_file and Path(self.video_file).is_file())

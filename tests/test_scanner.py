@@ -29,6 +29,8 @@ def test_scan_source_directory(tmp_path):
     result = scan_source_directory(str(tmp_path))
     assert "page-1" in result
     posts = result["page-1"]
-    assert len(posts) == 2
+    # v2 has no caption/comment: it is incomplete and must never be offered for posting
+    assert len(posts) == 1
     assert posts[0].post_num == 1
     assert posts[0].caption_file.endswith("c1.txt")
+    assert posts[0].uid == "page-1/v1"

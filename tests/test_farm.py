@@ -93,6 +93,10 @@ def test_init_scripts_for_device_success(tmp_path):
     v_dir = p1_dir / "video"
     v_dir.mkdir(parents=True)
     (v_dir / "01.mp4").write_text("dummy video")
+    (p1_dir / "caption").mkdir()
+    (p1_dir / "caption" / "01.txt").write_text("cap", encoding="utf-8")
+    (p1_dir / "comments").mkdir()
+    (p1_dir / "comments" / "01.txt").write_text("cmt", encoding="utf-8")
 
     tpl_txt = tmp_path / "template_script.txt"
     tpl_txt.write_text("SCRIPT {ID} {PAGE_NAME} {VIDEO_DIR} {CAPTION_PATH} {COMMENT_PATH}")

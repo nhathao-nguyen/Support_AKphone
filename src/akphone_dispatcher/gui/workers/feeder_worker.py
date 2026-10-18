@@ -7,6 +7,7 @@ import time
 from typing import Any, Callable, Dict, List, Optional, Set
 
 from akphone_dispatcher.core.config import AppConfig
+from akphone_dispatcher.core.ledger import Ledger, PostStatus
 from akphone_dispatcher.core.models import DeviceProfile, PageInfo
 from akphone_dispatcher.core.payload import (
     clean_completed_payloads,
@@ -31,7 +32,9 @@ class DeviceFeederWorker:
         notifier: TelegramNotifier,
         session_manager: SessionManager,
         on_progress_update: Callable[[], None],
+        ledger: Optional[Ledger] = None,
     ):
+        self.ledger = ledger
         self.serial = serial
         self.profile = profile
         self.config = config
@@ -108,6 +111,7 @@ class DeviceFeederWorker:
             mark_payload_posted(p_info.active_archive)
             p_info.active_archive = archive
             p_info.current_idx = post_idx
+            self._mark(page_id, post_idx, PostStatus.FED)
             p_info.last_status = f"Đã nạp Bài {post_idx}"
             logger.info(
                 f"✂ [MÁY {self.serial} | {self.profile.via_tag}] Đã chuyển bài {post_idx} của [{page_id}] khỏi kho."
@@ -119,11 +123,21 @@ class DeviceFeederWorker:
             )
             return False
 
+    def _mark(self, page_id: str, seq: int, status: str, note: str = ""):
+        """Record a post event in the ledger; the ledger must never break the worker."""
+        if self.ledger is None:
+            return
+        try:
+            self.ledger.set_status_by_slot(self.serial, page_id, seq, status, note)
+        except Exception as e:
+            logger.warning(f"Không ghi được sổ cái ({page_id}#{seq} → {status}): {e}")
+
     def _queue_feed(self, pid: str):
         """A script runs exactly once per post: success or failure, the page moves on."""
         info = self.profile.pages_data.get(pid)
         if info is None or pid in self.pending_feed:
             return
+        self._mark(pid, info.current_idx, PostStatus.POST_FAILED, info.last_status)
         self.pending_feed[pid] = {
             "time": time.time(),
             "target_idx": self.active_round_pages.index(pid),
@@ -285,6 +299,7 @@ class DeviceFeederWorker:
                     c_idx = info.current_idx
                     total = info.total_posts
                     info.last_status = f"Hoàn tất Bài {c_idx}"
+                    self._mark(pid, c_idx, PostStatus.POSTED)
                     logger.info(
                         f"🎉 [MÁY {self.serial} | {self.profile.via_tag}] Xong bài {c_idx}/{total} của [{pid}]!"
                     )
@@ -447,7 +462,9 @@ class FarmFeederManager:
         notifier: TelegramNotifier,
         session_manager: SessionManager,
         on_progress_update: Callable[[], None],
+        ledger: Optional[Ledger] = None,
     ):
+        self.ledger = ledger
         self.config = config
         self.adb = adb_service
         self.notifier = notifier
@@ -475,6 +492,7 @@ class FarmFeederManager:
                 notifier=self.notifier,
                 session_manager=self.session_manager,
                 on_progress_update=self.on_progress_update,
+                ledger=self.ledger,
             )
             self.workers[serial] = worker
             worker.start()

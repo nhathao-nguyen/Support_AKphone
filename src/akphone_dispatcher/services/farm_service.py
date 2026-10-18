@@ -6,9 +6,10 @@ The GUI only calls these functions and shows a dialog when ``ProvisionError`` is
 import os
 from pathlib import Path
 import re
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from akphone_dispatcher.core.config import AppConfig
+from akphone_dispatcher.core.ledger import Ledger, PostStatus
 from akphone_dispatcher.core.models import DeviceProfile, PageInfo
 from akphone_dispatcher.core.payload import mark_payload_posted, transfer_payload
 from akphone_dispatcher.core.scanner import (
@@ -63,7 +64,9 @@ def _require_dirs(profile: DeviceProfile, config: AppConfig, serial: str) -> str
     return src_dir
 
 
-def provision_device(profile: DeviceProfile, config: AppConfig, serial: str) -> int:
+def provision_device(
+    profile: DeviceProfile, config: AppConfig, serial: str, ledger: Optional[Ledger] = None
+) -> int:
     """Generate 1 Page = 1 Script files for a device and load post 1 of every page.
 
     Returns the number of pages created. Raises ``ProvisionError`` on any failure; nothing is
@@ -160,6 +163,18 @@ def provision_device(profile: DeviceProfile, config: AppConfig, serial: str) -> 
             )
             profile.pages_data[page_id] = page
 
+            if ledger is not None:
+                for post in posts:
+                    ledger.register_post(
+                        post.uid or f"{folder_name}/{post.post_num}",
+                        serial,
+                        via,
+                        page_id,
+                        folder_name,
+                        post.post_num,
+                        comment_file=post.comment_file,
+                    )
+
             # Feed post 1
             first = posts[0]
             payload = {
@@ -178,6 +193,8 @@ def provision_device(profile: DeviceProfile, config: AppConfig, serial: str) -> 
             )
             if "_payload_archive" in payload:
                 page.active_archive = payload["_payload_archive"]
+            if ledger is not None:
+                ledger.set_status_by_slot(serial, page_id, 1, PostStatus.FED)
     except Exception as e:
         profile.status = "❌ Lỗi tạo kịch bản"
         logger.error(f"Lỗi khi khởi tạo kịch bản cho máy {serial}: {e}", exc_info=True)
@@ -194,7 +211,10 @@ def provision_device(profile: DeviceProfile, config: AppConfig, serial: str) -> 
 
 
 def restore_farm_session(
-    session: Dict[str, Any], profiles: Dict[str, DeviceProfile], config: AppConfig
+    session: Dict[str, Any],
+    profiles: Dict[str, DeviceProfile],
+    config: AppConfig,
+    ledger: Optional[Ledger] = None,
 ) -> int:
     """Rebuild page state of connected devices from a saved session. Returns devices restored."""
     scripts_files_dest = Path(config.akphone_dir) / "SCRIPTS" / "FILES"
@@ -237,5 +257,17 @@ def restore_farm_session(
                 posts=posts,
                 active_archive=pdata.get("active_archive", ""),
             )
+            if ledger is not None:
+                for post in posts:
+                    if post.uid:  # placeholders of consumed posts have no uid
+                        ledger.register_post(
+                            post.uid,
+                            serial,
+                            profile.fb_index,
+                            pid,
+                            folder,
+                            post.post_num,
+                            comment_file=post.comment_file,
+                        )
         restored_devices += 1
     return restored_devices

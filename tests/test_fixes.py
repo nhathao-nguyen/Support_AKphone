@@ -39,6 +39,20 @@ def test_done_flags_empty_or_truncated_output_is_none():
     assert _flags("page1fb1.txt\npage2fb1.txt") is None  # no end marker (timeout)
 
 
+def test_done_flags_ignore_foreign_files():
+    out = "page1fb1.txt\nold video 1.mp4\nvd2page34fb3.mp4\nnotes.bin\n" + END
+    assert _flags(out) == {"page1fb1"}
+
+
+def test_init_round_flags_only_removes_txt_flags():
+    svc = AdbService(adb_path="x")
+    with patch.object(svc, "run_shell", return_value="") as run:
+        assert svc.init_round_flags("S", ["page1fb1"]) is True
+    cmd = run.call_args.args[1]
+    assert "Done/*.txt" in cmd and "Done/*&&" not in cmd.replace(" ", "")
+    assert "rm -f /storage/emulated/0/Android/Done/* " not in cmd
+
+
 def test_done_flags_error_text_is_none():
     err = "ls: /storage/emulated/0/Android/Done: No such file or directory"
     assert _flags(f"{err}\n{END}") is None

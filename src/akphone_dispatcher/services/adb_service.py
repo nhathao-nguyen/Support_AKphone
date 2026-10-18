@@ -365,7 +365,7 @@ class AdbService:
         touch_files = " ".join([f"/storage/emulated/0/Android/Done/{pid}.txt" for pid in page_ids])
         sh_cmd = (
             "mkdir -p /storage/emulated/0/Android/Done && "
-            "rm -f /storage/emulated/0/Android/Done/* && "
+            "rm -f /storage/emulated/0/Android/Done/*.txt && "
             f"touch {touch_files} /storage/emulated/0/Android/Done/round_done.txt"
         )
         try:
@@ -406,11 +406,12 @@ class AdbService:
             low = name.lower()
             if (
                 name.startswith("ls:")
+                or ": " in name
                 or "no such file" in low
                 or "permission denied" in low
-                or "error" in low
-                or " " in name
+                or "inaccessible" in low
             ):
-                return None
-            flags.add(name[:-4] if name.endswith(".txt") else name)
+                return None  # an error message, not a file listing
+            if name.endswith(".txt") and " " not in name:
+                flags.add(name[:-4])  # flags are always <id>.txt; other files are not ours
         return flags

@@ -10,6 +10,7 @@ import customtkinter as ctk
 
 from akphone_dispatcher import __version__
 from akphone_dispatcher.core.config import AppConfig
+from akphone_dispatcher.core.ledger import Ledger
 from akphone_dispatcher.core.models import (
     DeviceInfo,
     DeviceProfile,
@@ -25,6 +26,7 @@ from akphone_dispatcher.services.notifier import TelegramNotifier
 from akphone_dispatcher.services.session import SessionManager
 from akphone_dispatcher.utils.helpers import sanitize_fb_index
 from akphone_dispatcher.services.farm_service import restore_farm_session
+from akphone_dispatcher.utils.helpers import get_app_base_dir
 from akphone_dispatcher.utils.logger import logger
 
 ctk.set_appearance_mode("Dark")
@@ -57,7 +59,9 @@ class AKPhoneApp(FarmTabMixin, ProgressTabMixin, TemplateTabMixin, SettingsTabMi
         self._start_queue_poller()
 
         # Feeder manager
+        self.ledger = Ledger(get_app_base_dir() / "configs" / "ledger.db")
         self.feeder_manager = FarmFeederManager(
+            ledger=self.ledger,
             config=self.config,
             adb_service=self.adb,
             notifier=self.notifier,
@@ -352,6 +356,6 @@ class AKPhoneApp(FarmTabMixin, ProgressTabMixin, TemplateTabMixin, SettingsTabMi
             "Khôi Phục Tiến Độ",
             f"Phát hiện phiên làm việc cũ gồm {len(devs)} máy.\nBạn có muốn khôi phục lại không?",
         ):
-            restore_farm_session(session, self.device_profiles, self.config)
+            restore_farm_session(session, self.device_profiles, self.config, ledger=self.ledger)
             self._update_progress_display()
             logger.info(f"Đã khôi phục thành công dữ liệu dàn {len(devs)} máy!")
