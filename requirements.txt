@@ -1,1 +1,2 @@
 customtkinter==6.0.0
+playwright>=1.40.0

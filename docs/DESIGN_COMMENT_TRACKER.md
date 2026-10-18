@@ -1,6 +1,6 @@
 # Thiết kế: theo dõi lượt xem và đăng comment tự động
 
-Trạng thái: **giai đoạn 1 (manifest, sổ cái), template mới và giai đoạn 2 (dịch vụ theo dõi với nguồn giả) đã cài đặt; vòng comment trên điện thoại, nguồn quét web thật và vận hành 24/24 chưa làm.**
+Trạng thái: **giai đoạn 1 (manifest, sổ cái), template mới và giai đoạn 2 (dịch vụ theo dõi với nguồn giả) giai đoạn 3 (vòng comment trên điện thoại) và nguồn quét web (Playwright + tài khoản đăng nhập tay) đã cài đặt; đã có tab 5 trong giao diện (cài đặt, tài khoản, link page và ngưỡng, bật/tắt theo dõi, sổ cái); chưa kiểm chứng trên Facebook thật; vận hành 24/24 chưa làm.**
 
 ## 1. Mục tiêu
 
@@ -77,7 +77,9 @@ nhập kho, không đăng chuỗi giả. Cách này cũng sửa lỗi ghép sai 
 1. **Biến trong template:** `{ID}`, `{PAGE_NAME}`, `{VIDEO_DIR}`, `{CAPTION_PATH}`,
    `{COMMENT_PATH}`, `{LINK_PATH}`, `{CMT_MARKER}`. Không còn tên page cố định trong script.
 2. **File trên máy tính** (`SCRIPTS\FILES`): `Caption_{ID}.txt`, `Comment_{ID}.txt`,
-   `Link_{ID}.txt` (link bài cần comment).
+   `Link_{ID}.txt` (link bài cần comment) và `CmtText_{ID}.txt` (nội dung comment của lượt này).
+   Script comment đọc `CmtText_{ID}.txt` chứ không đọc `Comment_{ID}.txt`, vì file sau bị ghi đè mỗi
+   lần nạp bài kế tiếp, có thể đúng lúc script comment đang chạy.
 3. **Mục báo việc trên điện thoại:** tool tạo `cmt{ID}.txt` bằng ADB trong thư mục cấu hình
    được (mặc định `/storage/emulated/0/Cmt/`) khi page có bài đạt ngưỡng. Script comment xóa mục
    này khi xong; tool theo dõi mục biến mất như cờ `Done`.
@@ -124,6 +126,20 @@ trình phân tích hỏng. Vì vậy nguồn lượt xem phải cắm thay đư�
   `Comment_{ID}.txt` và tạo mục `cmt{ID}.txt` (sau khi đã ghi `comment_marked`).
 - Trong vòng, tool theo dõi mục biến mất. Mục còn nguyên khi sang cờ sau hoặc hết thời gian là lỗi:
   ghi `comment_failed`, chụp màn hình, báo Telegram, không thử lại.
+
+### Hiện thực của vòng comment (giai đoạn 3)
+
+- `services/comment_dispatcher.py`: đầu mỗi vòng, mỗi page có bài `threshold_hit` (cũ nhất trước) được
+  ghi `Link_`/`CmtText_`, ghi sổ cái `comment_marked` **trước**, rồi tạo mục `cmt{ID}.txt` trên điện
+  thoại bằng ADB. Giới hạn `comment_daily_cap` comment mỗi page mỗi ngày.
+- Worker theo dõi mục như cờ `Done`: mục biến mất = `commented`. Lỗi (không thử lại, mục được xóa,
+  `comment_failed`) khi: page sau đã chạy xong mà mục còn, `round_done` bị xóa mà mục còn, hoặc
+  watchdog hết hạn. Danh sách mục không đọc được thì không bao giờ coi là "xong".
+- Sổ cái chỉ cho bài đi tiến trong vòng đời (không bao giờ lùi từ `comment_marked` về `posted`).
+- Giới hạn: phần comment nằm trong script đăng bài, nên page hết bài trong kho thì không còn được
+  comment; bài đã đạt ngưỡng nằm chờ trong sổ cái cho tới khi page có bài mới.
+- Điện thoại cần thư mục `Cmt` (mặc định `/storage/emulated/0/Cmt`) có mục trong Root Explorer để
+  script bấm `Cmt`.
 
 ## 9. Quá tải, tốc độ và chống spam
 

@@ -15,6 +15,7 @@ from akphone_dispatcher.core.payload import (
     transfer_payload,
 )
 from akphone_dispatcher.services.adb_service import AdbService
+from akphone_dispatcher.services.comment_dispatcher import CommentDispatcher, CommentJob
 from akphone_dispatcher.services.notifier import TelegramNotifier
 from akphone_dispatcher.services.session import SessionManager
 from akphone_dispatcher.utils.logger import logger
@@ -33,8 +34,12 @@ class DeviceFeederWorker:
         session_manager: SessionManager,
         on_progress_update: Callable[[], None],
         ledger: Optional[Ledger] = None,
+        comment_dispatcher: Optional[CommentDispatcher] = None,
     ):
         self.ledger = ledger
+        self.comment_dispatcher = comment_dispatcher
+        self.comment_jobs: Dict[str, CommentJob] = {}
+        self.pending_comments: Set[str] = set()
         self.serial = serial
         self.profile = profile
         self.config = config
@@ -165,8 +170,10 @@ class DeviceFeederWorker:
         self.pending_feed = {}
         self.last_flag_change_time = time.time()
 
+        self.comment_jobs, self.pending_comments = {}, set()
         if self.adb.init_round_flags(self.serial, self.active_round_pages):
             self.sentinel_active = True
+            self._prepare_comments()
             flags_str = ", ".join(self.active_round_pages)
             logger.info(
                 f"🚩 [MÁY {self.serial} | {self.profile.via_tag} | VÒNG {self.round_number}] "
@@ -174,6 +181,44 @@ class DeviceFeederWorker:
             )
             return True
         return False
+
+    # ---- comment jobs (marker files on the phone, tracked like Done flags) -------------------
+    def _prepare_comments(self) -> None:
+        if self.comment_dispatcher is None:
+            return
+        try:
+            self.comment_jobs = self.comment_dispatcher.prepare_round(
+                self.serial, self.active_round_pages
+            )
+        except Exception as e:  # a failing dispatcher must not stop the posting round
+            logger.error(f"[MÁY {self.serial}] Lỗi chuẩn bị comment: {e}")
+            self.comment_jobs = {}
+        self.pending_comments = set(self.comment_jobs)
+
+    def _poll_comment_markers(self) -> None:
+        """A marker that vanished means the phone finished that comment."""
+        if not self.pending_comments or self.comment_dispatcher is None:
+            return
+        markers = self.adb.list_flag_dir(self.serial, self.config.comment_marker_dir)
+        if markers is None:
+            return  # unreadable right now: never read that as "all comments done"
+        for pid in list(self.pending_comments):
+            job = self.comment_jobs[pid]
+            if job.marker not in markers:
+                self.pending_comments.discard(pid)
+                self.comment_dispatcher.complete(self.serial, job, True)
+                self.last_flag_change_time = time.time()
+                logger.info(f"💬 [MÁY {self.serial}] Đã comment xong cho [{pid}] (bài {job.post_uid}).")
+                self.on_progress_update()
+
+    def _fail_comment(self, pid: str, reason: str) -> None:
+        if pid not in self.pending_comments or self.comment_dispatcher is None:
+            return
+        self.pending_comments.discard(pid)
+        job = self.comment_jobs[pid]
+        self.comment_dispatcher.complete(self.serial, job, False, reason)
+        logger.warning(f"⚠️ [MÁY {self.serial}] Comment của [{pid}] lỗi: {reason}")
+        self._capture_and_notify_error(pid, f"Comment lỗi: {reason}")
 
     def _capture_and_notify_error(self, pid: str, reason: str):
         """Take screenshot of device and alert user via Telegram."""
@@ -255,6 +300,8 @@ class DeviceFeederWorker:
                     time.sleep(1)
                     continue
 
+                self._poll_comment_markers()  # before skip detection: finished != skipped
+
                 # 0. Detect sentinel flag round_done.txt removal (handled AFTER normal flags,
                 # so pages finishing in the same poll are not wrongly marked as failed)
                 sentinel_triggered = False
@@ -292,6 +339,10 @@ class DeviceFeederWorker:
                                 prev_pid, "Bị nhảy cóc/kịch bản đứng trước bị lỗi"
                             )
 
+                    for cpid in list(self.pending_comments):
+                        if self.active_round_pages.index(cpid) < target_idx:
+                            self._fail_comment(cpid, "bị bỏ qua: page sau đã chạy xong")
+
                     # 2. Page succeeded
                     self.current_round_flags.discard(pid)
                     self.round_succeeded.add(pid)
@@ -323,6 +374,10 @@ class DeviceFeederWorker:
                             stuck_pid, "Cờ chưa kịp xóa khi chạm cờ chốt sổ"
                         )
                     self.on_progress_update()
+
+                if sentinel_triggered:
+                    for cpid in list(self.pending_comments):
+                        self._fail_comment(cpid, "mục comment còn khi chạm cờ chốt sổ")
 
                 # Process safe delayed feed
                 if self.pending_feed:
@@ -358,9 +413,11 @@ class DeviceFeederWorker:
 
                 # 3. Timeout Watchdog
                 timeout_limit = self.config.watchdog_timeout
-                if self.current_round_flags and (
+                if (self.current_round_flags or self.pending_comments) and (
                     time.time() - self.last_flag_change_time > timeout_limit
                 ):
+                    for cpid in list(self.pending_comments):
+                        self._fail_comment(cpid, f"treo quá {timeout_limit} giây")
                     for stuck_pid in list(self.current_round_flags):
                         self.current_round_flags.discard(stuck_pid)
                         self.round_failed.add(stuck_pid)
@@ -463,8 +520,10 @@ class FarmFeederManager:
         session_manager: SessionManager,
         on_progress_update: Callable[[], None],
         ledger: Optional[Ledger] = None,
+        comment_dispatcher: Optional[CommentDispatcher] = None,
     ):
         self.ledger = ledger
+        self.comment_dispatcher = comment_dispatcher
         self.config = config
         self.adb = adb_service
         self.notifier = notifier
@@ -493,6 +552,7 @@ class FarmFeederManager:
                 session_manager=self.session_manager,
                 on_progress_update=self.on_progress_update,
                 ledger=self.ledger,
+                comment_dispatcher=self.comment_dispatcher,
             )
             self.workers[serial] = worker
             worker.start()

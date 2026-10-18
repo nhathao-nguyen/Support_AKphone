@@ -20,10 +20,13 @@ from akphone_dispatcher.gui.tabs.farm_tab import FarmTabMixin
 from akphone_dispatcher.gui.tabs.progress_tab import ProgressTabMixin
 from akphone_dispatcher.gui.tabs.settings_tab import SettingsTabMixin
 from akphone_dispatcher.gui.tabs.template_tab import TemplateTabMixin
+from akphone_dispatcher.gui.tabs.tracker_tab import TrackerTabMixin
 from akphone_dispatcher.gui.workers.feeder_worker import FarmFeederManager
 from akphone_dispatcher.services.adb_service import AdbService
+from akphone_dispatcher.services.comment_dispatcher import CommentDispatcher
 from akphone_dispatcher.services.notifier import TelegramNotifier
 from akphone_dispatcher.services.session import SessionManager
+from akphone_dispatcher.services.tracker_runtime import TrackerRuntime
 from akphone_dispatcher.utils.helpers import sanitize_fb_index
 from akphone_dispatcher.services.farm_service import restore_farm_session
 from akphone_dispatcher.utils.helpers import get_app_base_dir
@@ -33,7 +36,9 @@ ctk.set_appearance_mode("Dark")
 ctk.set_default_color_theme("blue")
 
 
-class AKPhoneApp(FarmTabMixin, ProgressTabMixin, TemplateTabMixin, SettingsTabMixin, ctk.CTk):
+class AKPhoneApp(
+    FarmTabMixin, ProgressTabMixin, TemplateTabMixin, SettingsTabMixin, TrackerTabMixin, ctk.CTk
+):
     """Multi-device phone farm dispatcher and feeder application."""
 
     def __init__(self):
@@ -60,8 +65,13 @@ class AKPhoneApp(FarmTabMixin, ProgressTabMixin, TemplateTabMixin, SettingsTabMi
 
         # Feeder manager
         self.ledger = Ledger(get_app_base_dir() / "configs" / "ledger.db")
+        self.comment_dispatcher = CommentDispatcher(self.ledger, self.adb, self.config)
+        self.tracker_runtime = TrackerRuntime(
+            self.ledger, self.config, self.notifier, lambda: self.device_profiles
+        )
         self.feeder_manager = FarmFeederManager(
             ledger=self.ledger,
+            comment_dispatcher=self.comment_dispatcher,
             config=self.config,
             adb_service=self.adb,
             notifier=self.notifier,
@@ -80,6 +90,15 @@ class AKPhoneApp(FarmTabMixin, ProgressTabMixin, TemplateTabMixin, SettingsTabMi
         # Initial ADB scan & session load
         self.after(500, self._refresh_devices_async)
         self._session_checked = False
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
+
+    def _on_close(self):
+        """Stop background work cleanly (the scan browsers) before the window goes away."""
+        try:
+            self.tracker_runtime.stop()
+        except Exception:
+            pass
+        self.destroy()
 
     def _start_queue_poller(self):
         self._process_ui_queue()
@@ -167,11 +186,13 @@ class AKPhoneApp(FarmTabMixin, ProgressTabMixin, TemplateTabMixin, SettingsTabMi
         self.tab_progress = self.tabview.add("📊 2. Tiến Độ Thời Gian Thực (Live Farm)")
         self.tab_template = self.tabview.add("📝 3. Kịch Bản Mẫu (Template)")
         self.tab_settings = self.tabview.add("🛡️ 4. Cài Đặt Hệ Thống & Telegram")
+        self.tab_tracker = self.tabview.add("🔎 5. Theo Dõi & Comment")
 
         self._build_tab_farm()
         self._build_tab_progress()
         self._build_tab_template()
         self._build_tab_settings()
+        self._build_tab_tracker()
 
 
 

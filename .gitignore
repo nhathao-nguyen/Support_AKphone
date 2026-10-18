@@ -40,3 +40,8 @@ test-folder/
 configs/ledger.db
 configs/ledger.db-wal
 configs/ledger.db-shm
+
+# Tracker: logged-in browser sessions and account list (never commit)
+configs/accounts.json
+configs/browser_profiles/
+configs/page_urls.json

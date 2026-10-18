@@ -46,6 +46,7 @@ CREATE TABLE IF NOT EXISTS posts (
     comment_state TEXT,
     expires_at    REAL,
     caption_snippet TEXT,
+    comment_text  TEXT,
     updated_at    REAL NOT NULL
 );
 CREATE TABLE IF NOT EXISTS page_settings (
@@ -67,6 +68,21 @@ CREATE TABLE IF NOT EXISTS post_events (
 );
 CREATE INDEX IF NOT EXISTS idx_events_uid ON post_events (post_uid);
 """
+
+# A post only moves forward in its life cycle: a late "posted" event for a slot must never
+# pull a post that is already waiting for / done with its comment back to "posted".
+_RANK = {
+    PostStatus.QUEUED: 0,
+    PostStatus.FED: 1,
+    PostStatus.POSTED: 2,
+    PostStatus.POST_FAILED: 2,
+    PostStatus.TRACKING: 3,
+    PostStatus.THRESHOLD_HIT: 4,
+    PostStatus.COMMENT_MARKED: 5,
+    PostStatus.COMMENTED: 6,
+    PostStatus.COMMENT_FAILED: 6,
+    PostStatus.EXPIRED: 6,
+}
 
 # Columns a caller may update through ``set_status(**fields)``.
 _UPDATABLE = {
@@ -101,9 +117,10 @@ class Ledger:
     def _migrate(self) -> None:
         """Add columns introduced after a database file was first created."""
         columns = {r["name"] for r in self._db.execute("PRAGMA table_info(posts)")}
-        if "caption_snippet" not in columns:
-            with self._db:
-                self._db.execute("ALTER TABLE posts ADD COLUMN caption_snippet TEXT")
+        for column in ("caption_snippet", "comment_text"):
+            if column not in columns:
+                with self._db:
+                    self._db.execute(f"ALTER TABLE posts ADD COLUMN {column} TEXT")
 
     def close(self):
         with self._lock:
@@ -120,6 +137,7 @@ class Ledger:
         seq: int,
         comment_file: str = "",
         caption_snippet: str = "",
+        comment_text: str = "",
     ) -> None:
         """Insert a post as ``queued`` or refresh its slot. Never changes an existing status."""
         now = time.time()
@@ -136,7 +154,8 @@ class Ledger:
                 self._db.execute(
                     "UPDATE posts SET serial=?, via=?, page_id=?, page_folder=?, seq=?, "
                     "comment_file=COALESCE(NULLIF(?, ''), comment_file), "
-                    "caption_snippet=COALESCE(NULLIF(?, ''), caption_snippet), updated_at=? "
+                    "caption_snippet=COALESCE(NULLIF(?, ''), caption_snippet), "
+                    "comment_text=COALESCE(NULLIF(?, ''), comment_text), updated_at=? "
                     "WHERE post_uid=?",
                     (
                         serial,
@@ -146,6 +165,7 @@ class Ledger:
                         seq,
                         comment_file,
                         caption_snippet,
+                        comment_text,
                         now,
                         post_uid,
                     ),
@@ -153,8 +173,8 @@ class Ledger:
             else:
                 self._db.execute(
                     "INSERT INTO posts (post_uid, serial, via, page_id, page_folder, seq, status, "
-                    "queued_at, comment_file, caption_snippet, updated_at) "
-                    "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                    "queued_at, comment_file, caption_snippet, comment_text, updated_at) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                     (
                         post_uid,
                         serial,
@@ -166,13 +186,17 @@ class Ledger:
                         now,
                         comment_file or None,
                         caption_snippet or None,
+                        comment_text or None,
                         now,
                     ),
                 )
                 self._event(post_uid, None, PostStatus.QUEUED, "registered")
 
     def set_status(self, post_uid: str, status: str, note: str = "", **fields: Any) -> bool:
-        """Move a post to ``status`` (no-op if unchanged). Returns False if the post is unknown."""
+        """Move a post forward to ``status`` (no-op if unchanged).
+
+        Returns False if the post is unknown or the move would go backwards.
+        """
         unknown = set(fields) - _UPDATABLE
         if unknown:
             raise ValueError(f"Cột không được phép cập nhật: {sorted(unknown)}")
@@ -184,6 +208,8 @@ class Ledger:
             if row is None:
                 return False
             old = row["status"]
+            if old != status and _RANK.get(status, 0) < _RANK.get(old, 0):
+                return False  # never move a post backwards
             sets, args = ["updated_at=?"], [now]
             if old != status:
                 sets.append("status=?")
@@ -240,6 +266,34 @@ class Ledger:
                 (PostStatus.POSTED, PostStatus.TRACKING),
             ).fetchall()
         return [dict(r) for r in rows]
+
+    def list_recent(self, limit: int = 200) -> List[Dict[str, Any]]:
+        """Most recently updated posts first (for the status table)."""
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT * FROM posts ORDER BY updated_at DESC LIMIT ?", (int(limit),)
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def oldest_threshold_hit(self, serial: str, page_id: str) -> Optional[Dict[str, Any]]:
+        """The post of this page that reached its threshold first (the next one to comment on)."""
+        with self._lock:
+            row = self._db.execute(
+                "SELECT * FROM posts WHERE serial=? AND page_id=? AND status=? "
+                "ORDER BY COALESCE(posted_at, updated_at) LIMIT 1",
+                (serial, page_id, PostStatus.THRESHOLD_HIT),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def comments_started_since(self, serial: str, page_id: str, since: float) -> int:
+        """How many comment jobs of this page were queued since ``since`` (daily cap)."""
+        with self._lock:
+            row = self._db.execute(
+                "SELECT COUNT(*) AS c FROM post_events e JOIN posts p ON p.post_uid = e.post_uid "
+                "WHERE p.serial=? AND p.page_id=? AND e.to_status=? AND e.ts>=?",
+                (serial, page_id, PostStatus.COMMENT_MARKED, since),
+            ).fetchone()
+        return int(row["c"])
 
     def claimed_urls(self, serial: str, page_id: str) -> set:
         """Facebook URLs already assigned to some post of this page."""

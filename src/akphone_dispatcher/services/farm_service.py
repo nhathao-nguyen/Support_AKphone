@@ -30,6 +30,15 @@ class ProvisionError(Exception):
         self.message = message
 
 
+def comment_text_of(comment_file: str) -> str:
+    """Comment as one line (the same flattening the post payload uses), kept in the ledger."""
+    try:
+        text = Path(comment_file).read_text(encoding="utf-8")
+    except (OSError, ValueError):
+        return ""
+    return " ".join(line.strip() for line in text.splitlines() if line.strip())
+
+
 def caption_snippet(caption_file: str, limit: int = 120) -> str:
     """First characters of a caption (single line), used later to recognise the post online."""
     try:
@@ -54,6 +63,9 @@ def comment_names(page_id: str, marker_dir: str) -> Dict[str, str]:
         "CMT_SCRIPT": f"cmt{marker}.txt",  # sub-script AKPhone runs when the marker is found
         "CMT_MARKER_PATH": f"{marker_dir.rstrip('/')}/{marker}.txt",
         "LINK_PATH": f"Link_{page_id}.txt",
+        # comment text lives in its OWN file: Comment_<ID>.txt is rewritten whenever the next
+        # post is fed, which may happen while the comment script is still running
+        "CMT_TEXT": f"CmtText_{page_id}.txt",
     }
 
 
@@ -176,6 +188,15 @@ def provision_device(
             page_video_dir = running_base / page_id
             page_video_dir.mkdir(parents=True, exist_ok=True)
 
+            # The template checks that the video file name contains the page id ({ID}); a video
+            # without it makes the script stop at that check, so warn before anything is posted.
+            unnamed = [p for p in posts if page_id.lower() not in Path(p.video_file).name.lower()]
+            if unnamed:
+                logger.warning(
+                    f"[{page_id}] {len(unnamed)}/{len(posts)} video không chứa mã '{page_id}' trong "
+                    f"tên (vd: {Path(unnamed[0].video_file).name}); script sẽ dừng ở bước kiểm tra {{ID}}."
+                )
+
             caption_name = f"Caption_{page_id}.txt"
             comment_name = f"Comment_{page_id}.txt"
             ak_caption_path = str(scripts_files_dest / caption_name)
@@ -196,7 +217,8 @@ def provision_device(
             if cmt_tpl:
                 # comment sub-script + an (initially empty) link file it will read
                 (scripts_dest / names["CMT_SCRIPT"]).write_text(
-                    render_template(cmt_tpl, values), encoding="utf-8"
+                    render_template(cmt_tpl, {**values, "COMMENT_PATH": names["CMT_TEXT"]}),
+                    encoding="utf-8",
                 )
                 link_file = scripts_files_dest / names["LINK_PATH"]
                 if not link_file.exists():
@@ -235,6 +257,7 @@ def provision_device(
                         post.post_num,
                         comment_file=post.comment_file,
                         caption_snippet=caption_snippet(post.caption_file),
+                        comment_text=comment_text_of(post.comment_file),
                     )
 
             # Feed post 1
@@ -331,6 +354,7 @@ def restore_farm_session(
                             post.post_num,
                             comment_file=post.comment_file,
                             caption_snippet=caption_snippet(post.caption_file),
+                            comment_text=comment_text_of(post.comment_file),
                         )
         restored_devices += 1
     return restored_devices

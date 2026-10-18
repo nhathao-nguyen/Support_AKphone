@@ -42,6 +42,7 @@ class AppConfig:
         self.payload_retention_days: int = 0
         # Phone folder where the tool drops "cmt<ID>.txt" markers (= a comment job for that page)
         self.comment_marker_dir: str = "/storage/emulated/0/Cmt"
+        self.comment_daily_cap: int = 5  # comment jobs per page per day
         # Comment tracker: views a post needs before its comment is queued, and how long to wait
         self.view_threshold: int = 1000
         self.track_expire_days: float = 7.0
@@ -144,6 +145,7 @@ class AppConfig:
                 data.get("payload_retention_days", self.payload_retention_days)
             )
             self.comment_marker_dir = str(data.get("comment_marker_dir", self.comment_marker_dir))
+            self.comment_daily_cap = max(1, int(data.get("comment_daily_cap", self.comment_daily_cap)))
             self.view_threshold = max(1, int(data.get("view_threshold", self.view_threshold)))
             self.track_expire_days = float(data.get("track_expire_days", self.track_expire_days))
 
@@ -198,6 +200,7 @@ class AppConfig:
             "auto_clean_payloads": self.auto_clean_payloads,
             "payload_retention_days": self.payload_retention_days,
             "comment_marker_dir": self.comment_marker_dir,
+            "comment_daily_cap": self.comment_daily_cap,
             "view_threshold": self.view_threshold,
             "track_expire_days": self.track_expire_days,
             "device_profiles": self.device_profiles,

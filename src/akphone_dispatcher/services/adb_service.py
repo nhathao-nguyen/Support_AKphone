@@ -376,9 +376,14 @@ class AdbService:
             return False
 
     DONE_END_MARKER = "__AKDONE_END__"
+    DONE_DIR = "/storage/emulated/0/Android/Done"
 
     def list_done_flags(self, serial: str) -> Optional[Set[str]]:
-        """List active flag names in the Done directory.
+        """List active flag names in the Done directory (see ``list_flag_dir``)."""
+        return self.list_flag_dir(serial, self.DONE_DIR)
+
+    def list_flag_dir(self, serial: str, directory: str) -> Optional[Set[str]]:
+        """Names (without ``.txt``) of the flag files in a phone folder.
 
         Returns None whenever the result is not trustworthy (timeout, truncated output,
         missing directory, shell error) so callers never mistake a failed read for
@@ -387,12 +392,31 @@ class AdbService:
         try:
             output = self.run_shell(
                 serial,
-                f"ls -1 /storage/emulated/0/Android/Done 2>&1; echo {self.DONE_END_MARKER}",
+                f"ls -1 {directory} 2>&1; echo {self.DONE_END_MARKER}",
                 timeout=4,
             )
         except Exception:
             return None
         return self.parse_done_listing(output)
+
+    def create_flag(self, serial: str, directory: str, name: str) -> bool:
+        """Create ``<directory>/<name>.txt`` on the phone and check that it really exists."""
+        path = f"{directory.rstrip('/')}/{name}.txt"
+        try:
+            self.run_shell(serial, f"mkdir -p {directory} && touch {path}", timeout=6)
+        except Exception as e:
+            logger.error(f"Không tạo được cờ {path} trên {serial}: {e}")
+            return False
+        flags = self.list_flag_dir(serial, directory)
+        return flags is not None and name in flags
+
+    def remove_flag(self, serial: str, directory: str, name: str) -> bool:
+        try:
+            self.run_shell(serial, f"rm -f {directory.rstrip('/')}/{name}.txt", timeout=6)
+            return True
+        except Exception as e:
+            logger.warning(f"Không xóa được cờ {name} trên {serial}: {e}")
+            return False
 
     @classmethod
     def parse_done_listing(cls, output: Optional[str]) -> Optional[Set[str]]:

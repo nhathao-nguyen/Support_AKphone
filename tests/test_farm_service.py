@@ -120,7 +120,7 @@ def test_generated_scripts_use_real_templates_and_leave_no_placeholder(tmp_path)
     assert "pagePAGE" not in post and "page2fbzz" not in post
     # the comment script reads this page's files and removes its marker when done
     assert "OPENLINK_FROMFILE=Link_page1fbzz.txt" in cmt
-    assert "GETDATA_RANDOM_NO_REMOVE=Comment_page1fbzz.txt" in cmt
+    assert "GETDATA_RANDOM_NO_REMOVE=CmtText_page1fbzz.txt" in cmt  # not the file feeds rewrite
     assert cmt.rstrip().splitlines()[-2] == "REMOVE=/storage/emulated/0/Cmt/cmtpage1fbzz.txt"
     assert (tmp_path / "ak" / "SCRIPTS" / "FILES" / "Link_page1fbzz.txt").is_file()
 
@@ -167,3 +167,23 @@ def test_scripts_dir_overrides_persist(tmp_path):
     cfg.save()
     again = AppConfig(tmp_path / "cfg.json")
     assert (again.scripts_dir, again.offers_dir, again.write_offers) == ("X:/a/SCRIPTS", "X:/a/OFFERS", False)
+
+
+def test_warns_when_video_name_lacks_page_id(tmp_path, capsys):
+    cfg = _config(tmp_path)
+    prof = DeviceProfile(serial="S", fb_index="1", source_dir=str(_make_source(tmp_path)))
+    provision_device(prof, cfg, "S")  # files are v1.mp4..: no "page1fb1" in the name
+    out = capsys.readouterr().out
+    assert "không chứa mã 'page1fb1'" in out
+
+
+def test_no_warning_when_video_name_has_page_id(tmp_path, capsys):
+    cfg = _config(tmp_path)
+    src = tmp_path / "src"
+    for sub in ("video", "caption", "comments"):
+        (src / "page-1" / sub).mkdir(parents=True)
+    (src / "page-1" / "video" / "vd1page1fb1.mp4").write_bytes(os.urandom(2048))
+    (src / "page-1" / "caption" / "cap1page1fb1.txt").write_text("c", encoding="utf-8")
+    (src / "page-1" / "comments" / "cmt1page1fb1.txt").write_text("m", encoding="utf-8")
+    provision_device(DeviceProfile(serial="S", fb_index="1", source_dir=str(src)), cfg, "S")
+    assert "không chứa mã" not in capsys.readouterr().out

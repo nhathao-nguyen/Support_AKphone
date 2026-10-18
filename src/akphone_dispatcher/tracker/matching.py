@@ -35,14 +35,31 @@ def match_post(
     A candidate must have a similar caption, must not already belong to another ledger post,
     and, when both sides know a publish time, must have been published close to ``posted_at``.
     Among candidates the closest in time wins (ties: higher caption similarity).
+
+    Some sources cannot read captions (the Reels grid only shows views). A candidate without a
+    caption is then matched by publish time alone, but only when exactly one such candidate is
+    inside the time window: with two or more the match is ambiguous and ``None`` is returned, so
+    a post is never attached to the wrong reel.
     """
     taken = set(claimed_urls)
     snippet = post.get("caption_snippet") or ""
     posted_at = post.get("posted_at")
+
+    blind = [
+        c
+        for c in observed
+        if c.url not in taken
+        and not normalize_caption(c.caption)
+        and posted_at is not None
+        and c.posted_at is not None
+        and abs(c.posted_at - posted_at) <= TIME_WINDOW_SECONDS
+    ]
     best, best_key = None, None
     for cand in observed:
         if cand.url in taken:
             continue
+        if not normalize_caption(cand.caption):
+            continue  # handled below by the time-only rule
         similarity = caption_similarity(snippet, cand.caption)
         if similarity < CAPTION_THRESHOLD:
             continue
@@ -54,4 +71,6 @@ def match_post(
         key = (gap if gap is not None else float("inf"), -similarity)
         if best_key is None or key < best_key:
             best, best_key = cand, key
-    return best
+    if best is not None:
+        return best
+    return blind[0] if len(blind) == 1 else None
