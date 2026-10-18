@@ -33,6 +33,7 @@ class PageInfo:
     caption_destinations: List[str] = field(default_factory=list)
     comment_destinations: List[str] = field(default_factory=list)
     last_status: str = "Ready"
+    active_archive: str = ""  # payload store of the post currently loaded for AKPhone
 
     @property
     def is_completed(self) -> bool:
@@ -115,3 +116,20 @@ class TelegramConfig:
     notify_on_success: bool = True
     notify_on_error: bool = True
     send_screenshots: bool = True
+
+
+def find_duplicate_fb_indexes(profiles: Dict[str, "DeviceProfile"]) -> Dict[str, List[str]]:
+    """Map fb_index -> serials for enabled profiles sharing the same index."""
+    groups: Dict[str, List[str]] = {}
+    for serial, prof in profiles.items():
+        if prof.enabled:
+            groups.setdefault(str(prof.fb_index), []).append(serial)
+    return {idx: serials for idx, serials in groups.items() if len(serials) > 1}
+
+
+def next_free_fb_index(used: Set[str]) -> str:
+    """Return the smallest positive integer (as str) not present in ``used``."""
+    n = 1
+    while str(n) in used:
+        n += 1
+    return str(n)

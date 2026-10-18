@@ -9,7 +9,11 @@ from typing import Any, Callable, Dict, List, Optional, Set
 
 from akphone_dispatcher.core.config import AppConfig
 from akphone_dispatcher.core.models import DeviceProfile, PageInfo
-from akphone_dispatcher.core.payload import clean_completed_payloads, transfer_payload
+from akphone_dispatcher.core.payload import (
+    clean_completed_payloads,
+    mark_payload_posted,
+    transfer_payload,
+)
 from akphone_dispatcher.services.adb_service import AdbService
 from akphone_dispatcher.services.notifier import TelegramNotifier
 from akphone_dispatcher.services.session import SessionManager
@@ -48,6 +52,7 @@ class DeviceFeederWorker:
         self.round_failed: Set[str] = set()
         self.pending_feed: Dict[str, Any] = {}
         self.sentinel_active = False
+        self.all_done_since = 0.0
         self.last_flag_change_time = time.time()
 
     def start(self):
@@ -101,6 +106,9 @@ class DeviceFeederWorker:
                 p_info.fanpage_name,
                 post_idx,
             )
+            # Previous post is confirmed posted: its archive may now be cleaned up
+            mark_payload_posted(p_info.active_archive)
+            p_info.active_archive = archive
             p_info.current_idx = post_idx
             p_info.last_status = f"Đã nạp Bài {post_idx}"
             logger.info(
@@ -112,6 +120,18 @@ class DeviceFeederWorker:
                 f"Lỗi khi chuyển bài cho [{page_id}] trên máy {self.serial}: {e}"
             )
             return False
+
+    def _queue_feed(self, pid: str):
+        """A script runs exactly once per post: success or failure, the page moves on."""
+        info = self.profile.pages_data.get(pid)
+        if info is None or pid in self.pending_feed:
+            return
+        self.pending_feed[pid] = {
+            "time": time.time(),
+            "target_idx": self.active_round_pages.index(pid),
+            "c_idx": info.current_idx,
+            "total": info.total_posts,
+        }
 
     def _init_done_round(self) -> bool:
         """Seed indicator flag files specifically onto THIS phone."""
@@ -127,6 +147,7 @@ class DeviceFeederWorker:
             return False
 
         self.current_round_flags = set(self.active_round_pages)
+        self.all_done_since = 0.0
         self.round_succeeded = set()
         self.round_failed = set()
         self.pending_feed = {}
@@ -219,7 +240,8 @@ class DeviceFeederWorker:
                     time.sleep(1)
                     continue
 
-                # 0. Check sentinel flag round_done.txt on this phone
+                # 0. Detect sentinel flag round_done.txt removal (handled AFTER normal flags,
+                # so pages finishing in the same poll are not wrongly marked as failed)
                 sentinel_triggered = False
                 if self.sentinel_active and ("round_done" not in files_in_done):
                     self.sentinel_active = False
@@ -227,16 +249,6 @@ class DeviceFeederWorker:
                     logger.info(
                         f"🎯 [MÁY {self.serial} | {self.profile.via_tag}] Cờ chốt sổ [round_done.txt] ĐÃ BỊ XÓA!"
                     )
-
-                    if self.current_round_flags:
-                        for stuck_pid in list(self.current_round_flags):
-                            self.current_round_flags.discard(stuck_pid)
-                            self.round_failed.add(stuck_pid)
-                            self.profile.pages_data[stuck_pid].last_status = "Lỗi (Bỏ qua)"
-                            self._capture_and_notify_error(
-                                stuck_pid, "Cờ chưa kịp xóa khi chạm cờ chốt sổ"
-                            )
-                        self.on_progress_update()
 
                 # Flags removed in current round on this phone
                 disappeared = [
@@ -256,6 +268,7 @@ class DeviceFeederWorker:
                         if prev_pid in self.current_round_flags:
                             self.current_round_flags.discard(prev_pid)
                             self.round_failed.add(prev_pid)
+                            self._queue_feed(prev_pid)
                             self.profile.pages_data[prev_pid].last_status = "Bị bỏ qua/Lỗi"
                             logger.warning(
                                 f"⚠️ [MÁY {self.serial}] Phát hiện [{prev_pid}] bị bỏ qua/lỗi kịch bản!"
@@ -284,6 +297,17 @@ class DeviceFeederWorker:
                     }
                     self.on_progress_update()
 
+                if sentinel_triggered and self.current_round_flags:
+                    for stuck_pid in list(self.current_round_flags):
+                        self.current_round_flags.discard(stuck_pid)
+                        self.round_failed.add(stuck_pid)
+                        self._queue_feed(stuck_pid)
+                        self.profile.pages_data[stuck_pid].last_status = "Lỗi (Bỏ qua)"
+                        self._capture_and_notify_error(
+                            stuck_pid, "Cờ chưa kịp xóa khi chạm cờ chốt sổ"
+                        )
+                    self.on_progress_update()
+
                 # Process safe delayed feed
                 if self.pending_feed:
                     now = time.time()
@@ -308,6 +332,7 @@ class DeviceFeederWorker:
                                     f"⚡ [MÁY {self.serial}] Đã bơm bài mới {next_idx}/{total} cho [{p_key}]!"
                                 )
                         else:
+                            mark_payload_posted(self.profile.pages_data[p_key].active_archive)
                             self.profile.pages_data[p_key].current_idx = total + 1
                             self.profile.pages_data[p_key].last_status = "🎉 Hết bài"
                             logger.info(
@@ -323,6 +348,7 @@ class DeviceFeederWorker:
                     for stuck_pid in list(self.current_round_flags):
                         self.current_round_flags.discard(stuck_pid)
                         self.round_failed.add(stuck_pid)
+                        self._queue_feed(stuck_pid)
                         self.profile.pages_data[stuck_pid].last_status = "Timeout treo máy"
                         logger.warning(
                             f"⏱️ [MÁY {self.serial}] [{stuck_pid}] quá {timeout_limit}s không phản hồi. Watchdog kích hoạt."
@@ -334,7 +360,19 @@ class DeviceFeederWorker:
 
                 # 4. End of round check
                 processed_count = len(self.round_succeeded) + len(self.round_failed)
-                if processed_count >= len(self.active_round_pages) or sentinel_triggered:
+                all_processed = processed_count >= len(self.active_round_pages)
+                if all_processed and self.sentinel_active and not sentinel_triggered:
+                    # Every page is done but round_done.txt is still on the phone: wait for the
+                    # AKPhone closing script, otherwise its late removal would hit the NEXT round.
+                    if not self.all_done_since:
+                        self.all_done_since = time.time()
+                        logger.info(
+                            f"⏳ [MÁY {self.serial}] Các page đã xong, chờ kịch bản chốt sổ xóa round_done..."
+                        )
+                    grace = min(max(float(self.config.watchdog_timeout), 30.0), 180.0)
+                    if time.time() - self.all_done_since < grace:
+                        all_processed = False
+                if all_processed or sentinel_triggered:
                     # Flush pending feeds
                     for p_key, pdata in list(self.pending_feed.items()):
                         c_idx = pdata["c_idx"]
@@ -342,6 +380,7 @@ class DeviceFeederWorker:
                         if c_idx < total:
                             self._feed_post(p_key, c_idx + 1)
                         else:
+                            mark_payload_posted(self.profile.pages_data[p_key].active_archive)
                             self.profile.pages_data[p_key].current_idx = total + 1
                     self.pending_feed.clear()
                     self.on_progress_update()

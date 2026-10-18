@@ -46,7 +46,14 @@ class AppLogger:
         file_entry = f"[{now_str}] [{level}] {message}\n"
 
         # 1. Console print
-        print(entry)
+        try:
+            print(entry)
+        except Exception:
+            # Console may use a legacy codepage (cp1252) or have no stdout (windowed exe)
+            try:
+                print(entry.encode("ascii", "replace").decode("ascii"))
+            except Exception:
+                pass
 
         # 2. File write
         with self.lock:
@@ -69,7 +76,13 @@ class AppLogger:
     def warning(self, msg: str):
         self.log("WARN", msg)
 
-    def error(self, msg: str):
+    def error(self, msg: str, exc_info: bool = False):
+        if exc_info:
+            import traceback
+
+            tb = traceback.format_exc()
+            if tb and tb.strip() != "NoneType: None":
+                msg = f"{msg}\n{tb.rstrip()}"
         self.log("ERROR", msg)
 
     def debug(self, msg: str):

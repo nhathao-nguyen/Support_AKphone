@@ -57,7 +57,7 @@ def test_clean_completed_payloads(tmp_path):
     store = tmp_path / ".payload-store" / "page1fb1" / "uuid1"
     store.mkdir(parents=True)
     manifest = store / "manifest.json"
-    manifest.write_text('{"state": "complete", "completed_at": 1000}', encoding="utf-8")
+    manifest.write_text('{"state": "complete", "completed_at": 1000, "posted": true}', encoding="utf-8")
     (store / "dummy.mp4").write_bytes(b"data")
 
     # Clean with max_age_days = 0

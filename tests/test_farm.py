@@ -102,6 +102,7 @@ def test_init_scripts_for_device_success(tmp_path):
     tpl_ini.write_text("INI {ID} {PAGE_NAME} {VIDEO_DIR}")
 
     app = MagicMock()
+    app._warn_duplicate_fb_index.return_value = False
     app.config = AppConfig(tmp_path / "cfg.json")
     app.config.akphone_dir = str(ak_dir)
     app.config.running_dir = str(running_dir)

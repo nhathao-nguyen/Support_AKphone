@@ -26,6 +26,12 @@ def normalize_path(path_val: Optional[str or Path]) -> Path:
     return Path(path_val).expanduser().resolve()
 
 
+def sanitize_fb_index(value: object, default: str = "1") -> str:
+    """Normalize a Via tag to letters and digits only (e.g. 'a b/c' -> 'abc')."""
+    cleaned = re.sub(r"[^A-Za-z0-9]", "", str(value or ""))
+    return cleaned or default
+
+
 def natural_sort_key(s: any) -> List[any]:
     """Sort strings containing numbers naturally: e.g. vd1, vd2, ..., vd10."""
     return [int(text) if text.isdigit() else text.lower() for text in re.split(r"(\d+)", str(s))]

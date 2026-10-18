@@ -26,6 +26,52 @@ def digest(path: Union[str, Path]) -> str:
     return result.hexdigest()
 
 
+def mark_payload_posted(archive_dir: Union[str, Path, None]) -> bool:
+    """Flag an archived payload as already posted so retention cleanup may delete it.
+
+    Payloads of posts that are still queued or currently being posted are never flagged,
+    therefore never deleted.
+    """
+    if not archive_dir:
+        return False
+    manifest_path = Path(archive_dir) / "manifest.json"
+    with TRANSFER_LOCK:
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["posted"] = True
+            manifest["posted_at"] = time.time()
+            temporary = manifest_path.with_suffix(".tmp")
+            temporary.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+            os.replace(temporary, manifest_path)
+            return True
+        except Exception as e:
+            logger.warning(f"Không thể đánh dấu bài đã đăng cho {archive_dir}: {e}")
+            return False
+
+
+def mark_payload_posted(archive_dir: Union[str, Path, None]) -> bool:
+    """Flag an archived payload as already posted so retention cleanup may delete it.
+
+    Payloads of posts that are still queued or currently being posted are never flagged,
+    therefore never deleted.
+    """
+    if not archive_dir:
+        return False
+    manifest_path = Path(archive_dir) / "manifest.json"
+    with TRANSFER_LOCK:
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["posted"] = True
+            manifest["posted_at"] = time.time()
+            temporary = manifest_path.with_suffix(".tmp")
+            temporary.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+            os.replace(temporary, manifest_path)
+            return True
+        except Exception as e:
+            logger.warning(f"Không thể đánh dấu bài đã đăng cho {archive_dir}: {e}")
+            return False
+
+
 def clean_completed_payloads(
     running_root: Union[str, Path],
     max_age_days: int = 0,
@@ -34,8 +80,9 @@ def clean_completed_payloads(
 
     Args:
         running_root: Root directory where .payload-store resides.
-        max_age_days: If 0, delete all payloads marked as 'complete'.
-            If > 0, only delete payloads completed more than max_age_days ago.
+        max_age_days: If 0, delete all payloads already posted.
+            If > 0, only delete payloads posted more than max_age_days ago.
+            Payloads not yet posted are never deleted.
 
     Returns:
         Number of payload directories cleaned up.
@@ -53,10 +100,10 @@ def clean_completed_payloads(
             try:
                 manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
                 state = manifest.get("state")
-                if state != "complete":
-                    continue
+                if state != "complete" or not manifest.get("posted"):
+                    continue  # keep queued / in-progress / unknown payloads
 
-                completed_at = manifest.get("completed_at")
+                completed_at = manifest.get("posted_at") or manifest.get("completed_at")
                 if completed_at is None:
                     completed_at = manifest_path.stat().st_mtime
 

@@ -377,24 +377,42 @@ class AdbService:
             logger.error(f"Lỗi nạp cờ Done lên điện thoại {serial}: {e}")
             return False
 
+    DONE_END_MARKER = "__AKDONE_END__"
+
     def list_done_flags(self, serial: str) -> Optional[Set[str]]:
-        """List active flag file names currently present in the Done directory."""
+        """List active flag names in the Done directory.
+
+        Returns None whenever the result is not trustworthy (timeout, truncated output,
+        missing directory, shell error) so callers never mistake a failed read for
+        "all flags removed".
+        """
         try:
-            output = self.run_shell(serial, "ls /storage/emulated/0/Android/Done", timeout=4)
-            if output is None:
-                return None
-            raw_lines = [
-                f.strip()
-                for f in output.split()
-                if f.strip() and "No such" not in f and "error" not in f.lower()
-            ]
-            flags: Set[str] = set()
-            for f in raw_lines:
-                if f.endswith(".txt"):
-                    flags.add(f[:-4])
-                else:
-                    flags.add(f)
-            return flags
+            output = self.run_shell(
+                serial,
+                f"ls -1 /storage/emulated/0/Android/Done 2>&1; echo {self.DONE_END_MARKER}",
+                timeout=4,
+            )
         except Exception:
             return None
+        return self.parse_done_listing(output)
 
+    @classmethod
+    def parse_done_listing(cls, output: Optional[str]) -> Optional[Set[str]]:
+        if not output:
+            return None
+        lines = [ln.strip() for ln in output.splitlines() if ln.strip()]
+        if not lines or lines[-1] != cls.DONE_END_MARKER:
+            return None  # truncated / timed out
+        flags: Set[str] = set()
+        for name in lines[:-1]:
+            low = name.lower()
+            if (
+                name.startswith("ls:")
+                or "no such file" in low
+                or "permission denied" in low
+                or "error" in low
+                or " " in name
+            ):
+                return None
+            flags.add(name[:-4] if name.endswith(".txt") else name)
+        return flags

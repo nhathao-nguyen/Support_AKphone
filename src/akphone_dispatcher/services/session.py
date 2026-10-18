@@ -41,6 +41,7 @@ class SessionManager:
                                 "current_idx": p.current_idx,
                                 "video_dir": p.video_dir,
                                 "last_status": p.last_status,
+                                "active_archive": p.active_archive,
                             }
                             for pid, p in prof.pages_data.items()
                         },

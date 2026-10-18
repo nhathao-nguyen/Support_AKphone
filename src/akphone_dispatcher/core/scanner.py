@@ -91,3 +91,28 @@ def parse_page_names_mapping(raw_text: str) -> Dict[str, str]:
         else:
             mapping[f"page-{idx}"] = line
     return mapping
+
+
+def rebuild_posts_for_restore(
+    saved_current_idx: int, saved_total: int, remaining: List[PostItem]
+) -> tuple:
+    """Rebuild a page's post list after restart.
+
+    Posts already moved to the running dir are deleted from the source, so a rescan only
+    yields the *unconsumed* posts. Consumed slots (index < current_idx) become placeholders
+    so that ``posts[idx - 1]`` keeps pointing at the right post.
+
+    Returns (posts, total_posts).
+    """
+    consumed = max(0, min(saved_current_idx, saved_total))
+    posts: List[PostItem] = [PostItem(post_num=i + 1, video_file="") for i in range(consumed)]
+    for offset, item in enumerate(remaining, start=1):
+        posts.append(
+            PostItem(
+                post_num=consumed + offset,
+                video_file=item.video_file,
+                caption_file=item.caption_file,
+                comment_file=item.comment_file,
+            )
+        )
+    return posts, consumed + len(remaining)

@@ -22,13 +22,24 @@ from akphone_dispatcher.core.models import (
     PageInfo,
     PostItem,
     TelegramConfig,
+    find_duplicate_fb_indexes,
+    next_free_fb_index,
 )
-from akphone_dispatcher.core.payload import clean_completed_payloads, transfer_payload
-from akphone_dispatcher.core.scanner import parse_page_names_mapping, scan_source_directory
+from akphone_dispatcher.core.payload import (
+    clean_completed_payloads,
+    mark_payload_posted,
+    transfer_payload,
+)
+from akphone_dispatcher.core.scanner import (
+    parse_page_names_mapping,
+    rebuild_posts_for_restore,
+    scan_source_directory,
+)
 from akphone_dispatcher.gui.workers.feeder_worker import FarmFeederManager
 from akphone_dispatcher.services.adb_service import AdbService
 from akphone_dispatcher.services.notifier import TelegramNotifier
 from akphone_dispatcher.services.session import SessionManager
+from akphone_dispatcher.utils.helpers import sanitize_fb_index
 from akphone_dispatcher.utils.logger import logger
 
 ctk.set_appearance_mode("Dark")
@@ -79,7 +90,7 @@ class AKPhoneApp(ctk.CTk):
 
         # Initial ADB scan & session load
         self.after(500, self._refresh_devices_async)
-        self.after(1200, self._check_existing_session)
+        self._session_checked = False
 
     def _start_queue_poller(self):
         self._process_ui_queue()
@@ -701,10 +712,18 @@ class AKPhoneApp(ctk.CTk):
         # Update profiles dictionary
         for idx, d in enumerate(devices, start=1):
             if d.serial not in self.device_profiles:
-                saved_cfg = self.config.get_profile(d.serial, default_fb_idx=str(idx))
+                used = {str(p.fb_index) for p in self.device_profiles.values()}
+                used |= {
+                    str(c.get("fb_index"))
+                    for s_, c in self.config.device_profiles.items()
+                    if s_ != d.serial and c.get("fb_index")
+                }
+                saved_cfg = self.config.get_profile(
+                    d.serial, default_fb_idx=next_free_fb_index(used)
+                )
                 prof = DeviceProfile(
                     serial=d.serial,
-                    fb_index=saved_cfg.get("fb_index", str(idx)),
+                    fb_index=sanitize_fb_index(saved_cfg.get("fb_index"), next_free_fb_index(used)),
                     source_dir=saved_cfg.get("source_dir", self.config.source_dir),
                     running_dir=self.config.running_dir,
                     page_names=saved_cfg.get("page_names", self.config.page_names),
@@ -750,6 +769,10 @@ class AKPhoneApp(ctk.CTk):
                     self.lbl_global_status.configure(
                         text="⚠️ Chưa tìm thấy thiết bị ADB", text_color="#f59e0b"
                     )
+
+            if not self._session_checked:
+                self._session_checked = True
+                self.after(200, self._check_existing_session)
 
             # Auto select first item if none selected
             if devices and (not self.selected_serial or self.selected_serial not in [d.serial for d in devices]):
@@ -805,7 +828,12 @@ class AKPhoneApp(ctk.CTk):
             return
 
         prof.enabled = bool(self.var_profile_enabled.get())
-        prof.fb_index = self.entry_profile_m.get().strip() or "1"
+        raw_via = self.entry_profile_m.get()
+        prof.fb_index = sanitize_fb_index(raw_via)
+        if raw_via != prof.fb_index and raw_via.strip():
+            # Strip spaces/special characters as the user types (e.g. "a b/c" -> "abc")
+            self.entry_profile_m.delete(0, "end")
+            self.entry_profile_m.insert(0, prof.fb_index)
         prof.source_dir = self.entry_profile_src.get().strip()
         prof.page_names = self.text_profile_pages.get("1.0", "end-1c").strip()
 
@@ -897,10 +925,25 @@ class AKPhoneApp(ctk.CTk):
             f"Đã tự động gán thứ tự fb1..fb{len(self.connected_devices)} cho toàn bộ {len(self.connected_devices)} máy!",
         )
 
+    def _warn_duplicate_fb_index(self) -> bool:
+        """Show an error and return True if enabled devices share an fb index."""
+        dups = find_duplicate_fb_indexes(self.device_profiles)
+        if not dups:
+            return False
+        detail = "\n".join(f"fb{idx}: {', '.join(sers)}" for idx, sers in dups.items())
+        messagebox.showerror(
+            "Trùng Chỉ Số Via {m}",
+            "Nhiều máy đang dùng cùng chỉ số Via, script/thư mục đệm sẽ đè lên nhau:\n\n"
+            f"{detail}\n\nHãy đổi chỉ số hoặc tắt bớt máy.",
+        )
+        return True
+
     def _init_scripts_for_device(self, serial: str) -> bool:
         """Compile and seed 1 Page = 1 Script files for a single Phone/Via."""
         prof = self.device_profiles.get(serial)
         if not prof:
+            return False
+        if prof.enabled and self._warn_duplicate_fb_index():
             return False
 
         src_dir = prof.source_dir or self.config.source_dir
@@ -951,8 +994,30 @@ class AKPhoneApp(ctk.CTk):
         txt_tpl = self.config.template_txt_path.read_text(encoding="utf-8")
         ini_tpl = self.config.template_ini_path.read_text(encoding="utf-8")
 
+        m_val = sanitize_fb_index(prof.fb_index)
+        prof.fb_index = m_val
+
+        # Refuse duplicated page ids BEFORE touching the source (posts are moved out of it)
+        ids_by_folder: Dict[str, List[str]] = {}
+        for folder_name in scanned:
+            m_num = re.search(r"\d+", folder_name)
+            pid = f"page{m_num.group(0) if m_num else folder_name}fb{m_val}"
+            ids_by_folder.setdefault(pid, []).append(folder_name)
+        clashes = {pid: names for pid, names in ids_by_folder.items() if len(names) > 1}
+        if clashes:
+            detail = "\n".join(f"{pid}: {', '.join(names)}" for pid, names in clashes.items())
+            logger.error(f"Trùng mã page trong kho của máy {serial}: {detail}")
+            messagebox.showerror(
+                "Trùng Mã Page",
+                "Nhiều thư mục page cho ra cùng một mã, sẽ ghi đè lẫn nhau:\n\n"
+                f"{detail}\n\nHãy đổi tên thư mục (ví dụ page-1, page-2, ...).",
+            )
+            return False
+
+        # Re-init overwrites whatever is loaded; the replaced posts count as posted
+        for old_page in prof.pages_data.values():
+            mark_payload_posted(old_page.active_archive)
         prof.pages_data = {}
-        m_val = prof.fb_index or "1"
 
         try:
             for folder_name, posts in scanned.items():
@@ -1021,6 +1086,7 @@ class AKPhoneApp(ctk.CTk):
                 )
                 if "_payload_archive" in target_dict:
                     target_post.archive_dir = target_dict["_payload_archive"]
+                    page_obj.active_archive = target_dict["_payload_archive"]
 
             prof.status = "✅ Sẵn sàng"
             logger.info(
@@ -1095,6 +1161,8 @@ class AKPhoneApp(ctk.CTk):
         prof = self.device_profiles.get(self.selected_serial)
         if not prof:
             return
+        if self._warn_duplicate_fb_index():
+            return
         if self.feeder_manager.start_device(self.selected_serial, prof):
             self.device_tree.item(
                 self.selected_serial,
@@ -1142,6 +1210,8 @@ class AKPhoneApp(ctk.CTk):
             messagebox.showerror("Lỗi", "Không thể nạp cờ Done lên điện thoại qua ADB!")
 
     def _start_all_devices(self):
+        if self._warn_duplicate_fb_index():
+            return
         started = self.feeder_manager.start_all(self.device_profiles)
         if started == 0:
             messagebox.showwarning(
@@ -1200,6 +1270,10 @@ class AKPhoneApp(ctk.CTk):
                     )
                 except Exception:
                     pass
+
+            # Persist progress so a crash/restart resumes from the real position
+            if any(p.pages_data for p in self.device_profiles.values()):
+                self.session_manager.save_farm_session(self.device_profiles)
 
             # Update Tab 2 multi-column Live Progress Treeview
             if not hasattr(self, "progress_tree"):
@@ -1380,7 +1454,7 @@ class AKPhoneApp(ctk.CTk):
                 for serial, s_data in devs.items():
                     if serial in self.device_profiles:
                         prof = self.device_profiles[serial]
-                        prof.fb_index = s_data.get("fb_index", prof.fb_index)
+                        prof.fb_index = sanitize_fb_index(s_data.get("fb_index"), prof.fb_index)
                         prof.source_dir = s_data.get("source_dir", prof.source_dir)
                         prof.page_names = s_data.get("page_names", prof.page_names)
                         prof.status = s_data.get("status", "Khôi phục")
@@ -1395,7 +1469,18 @@ class AKPhoneApp(ctk.CTk):
                         # Restore pages
                         for pid, pdata in s_data.get("pages", {}).items():
                             folder = pdata.get("folder_name", "")
-                            real_posts = scanned_posts.get(folder, [])
+                            remaining = scanned_posts.get(folder, [])
+                            saved_idx = int(pdata.get("current_idx", 1))
+                            saved_total = int(pdata.get("total_posts", 0))
+                            # Consumed posts are gone from the source: rebuild aligned list
+                            posts, total = rebuild_posts_for_restore(
+                                saved_idx, saved_total, remaining
+                            )
+                            if total != saved_total:
+                                logger.warning(
+                                    f"[{serial}|{pid}] Kho còn {len(remaining)} bài, lệch so với phiên "
+                                    f"cũ ({saved_total - min(saved_idx, saved_total)}). Cập nhật tổng bài = {total}."
+                                )
                             page_video_dir = pdata.get(
                                 "video_dir", str(Path(self.config.running_dir) / pid)
                             )
@@ -1406,13 +1491,14 @@ class AKPhoneApp(ctk.CTk):
                                 page_id=pid,
                                 folder_name=folder,
                                 fanpage_name=pdata["fanpage_name"],
-                                total_posts=pdata["total_posts"],
-                                current_idx=pdata["current_idx"],
+                                total_posts=total,
+                                current_idx=saved_idx,
                                 video_dir=page_video_dir,
                                 caption_destinations=[ak_caption],
                                 comment_destinations=[ak_comment],
                                 last_status=pdata.get("last_status", "Khôi phục"),
-                                posts=real_posts,
+                                posts=posts,
+                                active_archive=pdata.get("active_archive", ""),
                             )
                 self._update_progress_display()
                 logger.info(f"Đã khôi phục thành công dữ liệu dàn {len(devs)} máy!")
