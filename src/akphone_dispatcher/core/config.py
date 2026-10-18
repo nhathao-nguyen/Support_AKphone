@@ -38,6 +38,9 @@ class AppConfig:
         self.payload_retention_days: int = 0
         # Phone folder where the tool drops "cmt<ID>.txt" markers (= a comment job for that page)
         self.comment_marker_dir: str = "/storage/emulated/0/Cmt"
+        # Comment tracker: views a post needs before its comment is queued, and how long to wait
+        self.view_threshold: int = 1000
+        self.track_expire_days: float = 7.0
         self.telegram = TelegramConfig()
 
         # Multi-Device Profiles mapping: serial -> {fb_index, source_dir, page_names, enabled}
@@ -134,6 +137,8 @@ class AppConfig:
                 data.get("payload_retention_days", self.payload_retention_days)
             )
             self.comment_marker_dir = str(data.get("comment_marker_dir", self.comment_marker_dir))
+            self.view_threshold = max(1, int(data.get("view_threshold", self.view_threshold)))
+            self.track_expire_days = float(data.get("track_expire_days", self.track_expire_days))
 
             # Multi-device profiles
             self.device_profiles = data.get("device_profiles", {})
@@ -183,6 +188,8 @@ class AppConfig:
             "auto_clean_payloads": self.auto_clean_payloads,
             "payload_retention_days": self.payload_retention_days,
             "comment_marker_dir": self.comment_marker_dir,
+            "view_threshold": self.view_threshold,
+            "track_expire_days": self.track_expire_days,
             "device_profiles": self.device_profiles,
             "telegram": {
                 "bot_token": self.telegram.bot_token,

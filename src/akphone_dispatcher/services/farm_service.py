@@ -30,6 +30,15 @@ class ProvisionError(Exception):
         self.message = message
 
 
+def caption_snippet(caption_file: str, limit: int = 120) -> str:
+    """First characters of a caption (single line), used later to recognise the post online."""
+    try:
+        text = Path(caption_file).read_text(encoding="utf-8")
+    except (OSError, ValueError):
+        return ""
+    return " ".join(text.split())[:limit]
+
+
 def render_template(template: str, values: Dict[str, str]) -> str:
     """Replace every ``{KEY}`` of ``values`` in a script/ini template."""
     for key, value in values.items():
@@ -208,6 +217,7 @@ def provision_device(
                         folder_name,
                         post.post_num,
                         comment_file=post.comment_file,
+                        caption_snippet=caption_snippet(post.caption_file),
                     )
 
             # Feed post 1
@@ -303,6 +313,7 @@ def restore_farm_session(
                             folder,
                             post.post_num,
                             comment_file=post.comment_file,
+                            caption_snippet=caption_snippet(post.caption_file),
                         )
         restored_devices += 1
     return restored_devices

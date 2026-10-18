@@ -1,6 +1,6 @@
 # Thiết kế: theo dõi lượt xem và đăng comment tự động
 
-Trạng thái: **giai đoạn 1 đã cài đặt (manifest, mã bài, sổ cái SQLite, worker ghi sự kiện); các giai đoạn còn lại chưa làm.**
+Trạng thái: **giai đoạn 1 (manifest, sổ cái), template mới và giai đoạn 2 (dịch vụ theo dõi với nguồn giả) đã cài đặt; vòng comment trên điện thoại, nguồn quét web thật và vận hành 24/24 chưa làm.**
 
 ## 1. Mục tiêu
 

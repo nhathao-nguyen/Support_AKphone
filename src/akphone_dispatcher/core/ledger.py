@@ -45,7 +45,15 @@ CREATE TABLE IF NOT EXISTS posts (
     comment_file  TEXT,
     comment_state TEXT,
     expires_at    REAL,
+    caption_snippet TEXT,
     updated_at    REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS page_settings (
+    serial      TEXT NOT NULL,
+    page_id     TEXT NOT NULL,
+    mode        TEXT NOT NULL DEFAULT 'global',
+    custom_threshold INTEGER,
+    PRIMARY KEY (serial, page_id)
 );
 CREATE INDEX IF NOT EXISTS idx_posts_slot   ON posts (serial, page_id, seq);
 CREATE INDEX IF NOT EXISTS idx_posts_status ON posts (status);
@@ -88,6 +96,14 @@ class Ledger:
         if str(path) != ":memory:":
             self._db.execute("PRAGMA journal_mode=WAL")
         self._db.executescript(_SCHEMA)
+        self._migrate()
+
+    def _migrate(self) -> None:
+        """Add columns introduced after a database file was first created."""
+        columns = {r["name"] for r in self._db.execute("PRAGMA table_info(posts)")}
+        if "caption_snippet" not in columns:
+            with self._db:
+                self._db.execute("ALTER TABLE posts ADD COLUMN caption_snippet TEXT")
 
     def close(self):
         with self._lock:
@@ -103,6 +119,7 @@ class Ledger:
         page_folder: str,
         seq: int,
         comment_file: str = "",
+        caption_snippet: str = "",
     ) -> None:
         """Insert a post as ``queued`` or refresh its slot. Never changes an existing status."""
         now = time.time()
@@ -118,14 +135,26 @@ class Ledger:
             if exists:
                 self._db.execute(
                     "UPDATE posts SET serial=?, via=?, page_id=?, page_folder=?, seq=?, "
-                    "comment_file=COALESCE(NULLIF(?, ''), comment_file), updated_at=? "
+                    "comment_file=COALESCE(NULLIF(?, ''), comment_file), "
+                    "caption_snippet=COALESCE(NULLIF(?, ''), caption_snippet), updated_at=? "
                     "WHERE post_uid=?",
-                    (serial, via, page_id, page_folder, seq, comment_file, now, post_uid),
+                    (
+                        serial,
+                        via,
+                        page_id,
+                        page_folder,
+                        seq,
+                        comment_file,
+                        caption_snippet,
+                        now,
+                        post_uid,
+                    ),
                 )
             else:
                 self._db.execute(
                     "INSERT INTO posts (post_uid, serial, via, page_id, page_folder, seq, status, "
-                    "queued_at, comment_file, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                    "queued_at, comment_file, caption_snippet, updated_at) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                     (
                         post_uid,
                         serial,
@@ -136,6 +165,7 @@ class Ledger:
                         PostStatus.QUEUED,
                         now,
                         comment_file or None,
+                        caption_snippet or None,
                         now,
                     ),
                 )
@@ -199,6 +229,48 @@ class Ledger:
             row = self._db.execute(
                 "SELECT * FROM posts WHERE serial=? AND page_id=? AND seq=?",
                 (serial, page_id, seq),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def list_trackable(self) -> List[Dict[str, Any]]:
+        """Posts whose view count still has to be watched (posted or already tracking)."""
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT * FROM posts WHERE status IN (?, ?) ORDER BY posted_at",
+                (PostStatus.POSTED, PostStatus.TRACKING),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def claimed_urls(self, serial: str, page_id: str) -> set:
+        """Facebook URLs already assigned to some post of this page."""
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT fb_url FROM posts WHERE serial=? AND page_id=? AND fb_url IS NOT NULL",
+                (serial, page_id),
+            ).fetchall()
+        return {r["fb_url"] for r in rows}
+
+    # ---- per-page threshold settings ---------------------------------------------------------
+    def set_page_threshold(
+        self, serial: str, page_id: str, mode: str, custom_threshold: Optional[int] = None
+    ) -> None:
+        """``mode`` is ``"global"`` (use the shared threshold) or ``"custom"`` (own number)."""
+        if mode not in ("global", "custom"):
+            raise ValueError("mode phải là 'global' hoặc 'custom'")
+        if mode == "custom" and (custom_threshold is None or custom_threshold < 1):
+            raise ValueError("Ngưỡng riêng phải là số nguyên dương")
+        with self._lock, self._db:
+            self._db.execute(
+                "INSERT INTO page_settings (serial, page_id, mode, custom_threshold) "
+                "VALUES (?,?,?,?) ON CONFLICT(serial, page_id) DO UPDATE SET "
+                "mode=excluded.mode, custom_threshold=excluded.custom_threshold",
+                (serial, page_id, mode, custom_threshold if mode == "custom" else None),
+            )
+
+    def get_page_threshold(self, serial: str, page_id: str) -> Optional[Dict[str, Any]]:
+        with self._lock:
+            row = self._db.execute(
+                "SELECT * FROM page_settings WHERE serial=? AND page_id=?", (serial, page_id)
             ).fetchone()
         return dict(row) if row else None
 
