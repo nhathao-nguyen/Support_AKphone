@@ -379,8 +379,29 @@ class AdbService:
 
     def list_done_flags(self, serial: str) -> Optional[Set[str]]:
         """List active flag file names currently present in the Done directory."""
+        return self.list_flags(serial, "/storage/emulated/0/Android/Done")
+
+    def touch_flag(self, serial: str, flag_dir: str, name: str) -> bool:
+        """Create ``<flag_dir>/<name>.txt`` on the phone (e.g. a comment job marker)."""
         try:
-            output = self.run_shell(serial, "ls /storage/emulated/0/Android/Done", timeout=4)
+            self.run_shell(serial, f"mkdir -p {flag_dir} && touch {flag_dir}/{name}.txt", timeout=6)
+            return name in (self.list_flags(serial, flag_dir) or set())
+        except Exception as e:
+            logger.error(f"Lỗi tạo cờ {flag_dir}/{name}.txt trên điện thoại {serial}: {e}")
+            return False
+
+    def remove_flag(self, serial: str, flag_dir: str, name: str) -> bool:
+        try:
+            self.run_shell(serial, f"rm -f {flag_dir}/{name}.txt", timeout=5)
+            return True
+        except Exception as e:
+            logger.error(f"Lỗi xóa cờ {flag_dir}/{name}.txt trên điện thoại {serial}: {e}")
+            return False
+
+    def list_flags(self, serial: str, flag_dir: str) -> Optional[Set[str]]:
+        """List flag names (without .txt) in a phone directory; None if ADB failed."""
+        try:
+            output = self.run_shell(serial, f"ls {flag_dir}", timeout=4)
             if output is None:
                 return None
             raw_lines = [

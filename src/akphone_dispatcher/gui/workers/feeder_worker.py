@@ -7,13 +7,45 @@ import threading
 import time
 from typing import Any, Callable, Dict, List, Optional, Set
 
+from akphone_dispatcher.core.comment_queue import CommentQueue
 from akphone_dispatcher.core.config import AppConfig
 from akphone_dispatcher.core.models import DeviceProfile, PageInfo
-from akphone_dispatcher.core.payload import clean_completed_payloads, transfer_payload
+from akphone_dispatcher.core.payload import (
+    clean_completed_payloads,
+    read_flat_text,
+    transfer_payload,
+)
 from akphone_dispatcher.services.adb_service import AdbService
 from akphone_dispatcher.services.notifier import TelegramNotifier
 from akphone_dispatcher.services.session import SessionManager
 from akphone_dispatcher.utils.logger import logger
+
+
+def queue_post_comment(
+    comment_queue: Optional[CommentQueue],
+    serial: str,
+    p_info: PageInfo,
+    post_idx: int,
+    transferred: Dict[str, Any],
+):
+    """Hand the comment of a just-fed post to the comment queue (written later)."""
+    if comment_queue is None or not transferred.get("comment_file"):
+        return
+    try:
+        text = read_flat_text(transferred["comment_file"])
+    except Exception as e:
+        logger.warning(f"[Comment] Không đọc được comment bài {post_idx} của [{p_info.page_id}]: {e}")
+        return
+    if not text:
+        return
+    comment_queue.add_fed(
+        serial=serial,
+        page_id=p_info.page_id,
+        fanpage_name=p_info.fanpage_name,
+        post_num=post_idx,
+        video_name=Path(transferred["video_file"]).name,
+        comment_text=text,
+    )
 
 
 class DeviceFeederWorker:
@@ -28,6 +60,7 @@ class DeviceFeederWorker:
         notifier: TelegramNotifier,
         session_manager: SessionManager,
         on_progress_update: Callable[[], None],
+        comment_queue: Optional[CommentQueue] = None,
     ):
         self.serial = serial
         self.profile = profile
@@ -36,6 +69,7 @@ class DeviceFeederWorker:
         self.notifier = notifier
         self.session_manager = session_manager
         self.on_progress_update = on_progress_update
+        self.comment_queue = comment_queue
 
         self.stop_event = threading.Event()
         self.thread: Optional[threading.Thread] = None
@@ -83,7 +117,6 @@ class DeviceFeederWorker:
 
         target_post = p_info.posts[post_idx - 1]
         captions = p_info.caption_destinations or []
-        comments = p_info.comment_destinations or []
 
         try:
             target_dict = {
@@ -97,10 +130,11 @@ class DeviceFeederWorker:
                 target_dict,
                 p_info.video_dir,
                 captions,
-                comments,
+                [],  # comment is written later by the comment tracker
                 p_info.fanpage_name,
                 post_idx,
             )
+            queue_post_comment(self.comment_queue, self.serial, p_info, post_idx, target_dict)
             p_info.current_idx = post_idx
             p_info.last_status = f"Đã nạp Bài {post_idx}"
             logger.info(
@@ -271,6 +305,8 @@ class DeviceFeederWorker:
                     c_idx = info.current_idx
                     total = info.total_posts
                     info.last_status = f"Hoàn tất Bài {c_idx}"
+                    if self.comment_queue is not None:
+                        self.comment_queue.mark_posted(self.serial, pid)
                     logger.info(
                         f"🎉 [MÁY {self.serial} | {self.profile.via_tag}] Xong bài {c_idx}/{total} của [{pid}]!"
                     )
@@ -407,12 +443,14 @@ class FarmFeederManager:
         notifier: TelegramNotifier,
         session_manager: SessionManager,
         on_progress_update: Callable[[], None],
+        comment_queue: Optional[CommentQueue] = None,
     ):
         self.config = config
         self.adb = adb_service
         self.notifier = notifier
         self.session_manager = session_manager
         self.on_progress_update = on_progress_update
+        self.comment_queue = comment_queue
         self.workers: Dict[str, DeviceFeederWorker] = {}
         self.lock = threading.Lock()
 
@@ -435,6 +473,7 @@ class FarmFeederManager:
                 notifier=self.notifier,
                 session_manager=self.session_manager,
                 on_progress_update=self.on_progress_update,
+                comment_queue=self.comment_queue,
             )
             self.workers[serial] = worker
             worker.start()

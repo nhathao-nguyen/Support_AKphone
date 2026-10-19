@@ -115,3 +115,24 @@ class TelegramConfig:
     notify_on_success: bool = True
     notify_on_error: bool = True
     send_screenshots: bool = True
+
+
+@dataclass
+class CommentConfig:
+    """Delayed comment: push link + comment once a post's views reach the threshold."""
+
+    enabled: bool = False
+    view_threshold: int = 5000
+    views_interval_min: int = 60  # old stream: re-read views of each page this often
+    expire_hours: int = 168  # stop tracking a post after 7 days
+    cmt_timeout_s: int = 3600
+    link_delay_s: int = 60  # new stream: first look for the reel this long after posting
+    link_retry_s: int = 240  # then retry this often...
+    link_fast_attempts: int = 6  # ...this many times, then only with the views stream
+    scan_gap_min_s: float = 2.0  # pause between two page loads
+    scan_gap_max_s: float = 5.0
+    archive_after_hours: int = 24  # finished jobs stay in the table this long
+    flag_dir: str = "/storage/emulated/0/Android/CMT"
+    headless: bool = True
+    browser_channel: str = "msedge"
+    page_urls: str = ""  # one "Tên Fanpage: https://www.facebook.com/..." per line

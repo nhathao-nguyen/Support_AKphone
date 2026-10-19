@@ -6,7 +6,7 @@ import shutil
 import string
 import sys
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 
 def get_app_base_dir() -> Path:
@@ -105,3 +105,18 @@ def find_akphone_root(hint_path: Optional[str] = None) -> Optional[str]:
         return str(candidate.resolve())
 
     return None
+
+
+def resolve_akphone_layout(ak_dir: str) -> Tuple[Path, Optional[Path]]:
+    """Return (scripts dir, OFFERS dir or None) for an AKPhone or AKPhoneS root.
+
+    AKPhone keeps scripts in <root>/SCRIPTS next to <root>/OFFERS.
+    AKPhoneS keeps them in <root>/assets/SCRIPTS and has no OFFERS folder.
+    """
+    root = Path(ak_dir)
+    akphones_scripts = root / "assets" / "SCRIPTS"
+    scripts = akphones_scripts if akphones_scripts.is_dir() else root / "SCRIPTS"
+    offers = next(
+        (p for p in (root / "OFFERS", root / "assets" / "OFFERS") if p.is_dir()), None
+    )
+    return scripts, offers

@@ -84,15 +84,12 @@ def test_farm_feeder_manager_start_and_stop():
     assert not manager.is_running("DEV_2")
 
 
-def test_init_scripts_for_device_success(tmp_path):
+def _init_scripts(tmp_path, ak_dir, write_offers):
     from akphone_dispatcher.gui.app import AKPhoneApp
 
-    ak_dir = tmp_path / "akphone"
-    ak_dir.mkdir()
     running_dir = tmp_path / "running"
     source_dir = tmp_path / "source"
-    p1_dir = source_dir / "page-1"
-    v_dir = p1_dir / "video"
+    v_dir = source_dir / "page-1" / "video"
     v_dir.mkdir(parents=True)
     (v_dir / "01.mp4").write_text("dummy video")
 
@@ -109,14 +106,21 @@ def test_init_scripts_for_device_success(tmp_path):
     app.config.template_txt_path = tpl_txt
     app.config.template_ini_path = tpl_ini
     app.config.page_names = "page-1: My Fanpage"
+    app.config.write_offers = write_offers
 
     prof = DeviceProfile(serial="TEST_SERIAL", fb_index="2")
     app.device_profiles = {"TEST_SERIAL": prof}
 
     with patch("akphone_dispatcher.gui.app.transfer_payload") as mock_transfer:
-        res = AKPhoneApp._init_scripts_for_device(app, "TEST_SERIAL")
-        assert res is True
+        assert AKPhoneApp._init_scripts_for_device(app, "TEST_SERIAL") is True
         mock_transfer.assert_called_once()
+    return prof
+
+
+def test_init_scripts_for_device_success(tmp_path):
+    ak_dir = tmp_path / "akphone"
+    (ak_dir / "OFFERS").mkdir(parents=True)
+    prof = _init_scripts(tmp_path, ak_dir, write_offers=True)
 
     assert "page1fb2" in prof.pages_data
     page = prof.pages_data["page1fb2"]
@@ -127,7 +131,32 @@ def test_init_scripts_for_device_success(tmp_path):
     assert script_file.exists()
     assert "SCRIPT page1fb2 My Fanpage" in script_file.read_text(encoding="utf-8")
 
+    cmt_script = (ak_dir / "SCRIPTS" / "cmtpage1fb2.txt").read_text(encoding="utf-8")
+    assert "OPENLINK_FROMFILE=linkcmtpage1fb2.txt" in cmt_script
+    assert "Comment_page1fb2.txt" in cmt_script and "{" not in cmt_script
+
     offer_file = ak_dir / "OFFERS" / "page1fb2.ini"
     assert offer_file.exists()
     assert "INI page1fb2 My Fanpage" in offer_file.read_text(encoding="utf-8")
 
+
+def test_init_scripts_skips_offers_by_default(tmp_path):
+    ak_dir = tmp_path / "akphone"
+    (ak_dir / "OFFERS").mkdir(parents=True)
+    _init_scripts(tmp_path, ak_dir, write_offers=False)
+    assert (ak_dir / "SCRIPTS" / "page1fb2.txt").exists()
+    assert not (ak_dir / "OFFERS" / "page1fb2.ini").exists()
+
+
+def test_init_scripts_akphones_layout_without_offers(tmp_path):
+    ak_dir = tmp_path / "AKPhoneS"
+    (ak_dir / "assets" / "SCRIPTS").mkdir(parents=True)
+    _init_scripts(tmp_path, ak_dir, write_offers=True)  # ticked by mistake
+
+    scripts = ak_dir / "assets" / "SCRIPTS"
+    assert (scripts / "page1fb2.txt").exists()
+    assert (scripts / "cmtpage1fb2.txt").exists()
+    assert (scripts / "FILES").is_dir()
+    assert not (ak_dir / "SCRIPTS").exists()
+    assert not (ak_dir / "OFFERS").exists()
+    assert not (ak_dir / "assets" / "OFFERS").exists()

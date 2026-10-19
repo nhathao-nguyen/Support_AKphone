@@ -12,6 +12,7 @@
     "auto_clean_storage": true,
     "auto_clean_payloads": true,
     "payload_retention_days": 0,
+    "write_offers": false,
     "device_profiles": {
         "033ad2b00504": {
             "fb_index": "1",
@@ -33,5 +34,16 @@
         "notify_on_success": true,
         "notify_on_error": true,
         "send_screenshots": true
+    },
+    "comment": {
+        "enabled": false,
+        "view_threshold": 5000,
+        "expire_hours": 168,
+        "cmt_timeout_s": 3600,
+        "flag_dir": "/storage/emulated/0/Android/CMT",
+        "headless": true,
+        "browser_channel": "msedge",
+        "page_urls": "",
+        "views_interval_min": 60
     }
 }

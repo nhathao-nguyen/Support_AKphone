@@ -15,6 +15,7 @@ from typing import Any, Callable, Dict, List, Optional
 import customtkinter as ctk
 
 from akphone_dispatcher import __version__
+from akphone_dispatcher.core.comment_queue import CommentQueue
 from akphone_dispatcher.core.config import AppConfig
 from akphone_dispatcher.core.models import (
     DeviceInfo,
@@ -25,17 +26,24 @@ from akphone_dispatcher.core.models import (
 )
 from akphone_dispatcher.core.payload import clean_completed_payloads, transfer_payload
 from akphone_dispatcher.core.scanner import parse_page_names_mapping, scan_source_directory
-from akphone_dispatcher.gui.workers.feeder_worker import FarmFeederManager
+from akphone_dispatcher.gui.comment_tab import CommentTabMixin
+from akphone_dispatcher.gui.workers.feeder_worker import FarmFeederManager, queue_post_comment
 from akphone_dispatcher.services.adb_service import AdbService
+from akphone_dispatcher.services.comment_tracker import (
+    CommentTracker,
+    comment_filename,
+    link_filename,
+)
 from akphone_dispatcher.services.notifier import TelegramNotifier
 from akphone_dispatcher.services.session import SessionManager
+from akphone_dispatcher.utils.helpers import resolve_akphone_layout
 from akphone_dispatcher.utils.logger import logger
 
 ctk.set_appearance_mode("Dark")
 ctk.set_default_color_theme("blue")
 
 
-class AKPhoneApp(ctk.CTk):
+class AKPhoneApp(CommentTabMixin, ctk.CTk):
     """Multi-device phone farm dispatcher and feeder application."""
 
     def __init__(self):
@@ -49,6 +57,10 @@ class AKPhoneApp(ctk.CTk):
         self.adb = AdbService(self.config.adb_path)
         self.notifier = TelegramNotifier(self.config.telegram)
         self.session_manager = SessionManager()
+        self.comment_queue = CommentQueue(self.config.comment_queue_path)
+        self.comment_tracker = CommentTracker(
+            self.config, self.adb, self.notifier, self.comment_queue
+        )
 
         # Multi-device state
         self.connected_devices: List[DeviceInfo] = []
@@ -67,6 +79,7 @@ class AKPhoneApp(ctk.CTk):
             notifier=self.notifier,
             session_manager=self.session_manager,
             on_progress_update=self._update_progress_display,
+            comment_queue=self.comment_queue,
         )
 
         # Build UI layout
@@ -80,6 +93,8 @@ class AKPhoneApp(ctk.CTk):
         # Initial ADB scan & session load
         self.after(500, self._refresh_devices_async)
         self.after(1200, self._check_existing_session)
+        if self.config.comment.enabled:
+            self.after(3000, self.comment_tracker.start)
 
     def _start_queue_poller(self):
         self._process_ui_queue()
@@ -167,11 +182,13 @@ class AKPhoneApp(ctk.CTk):
         self.tab_progress = self.tabview.add("📊 2. Tiến Độ Thời Gian Thực (Live Farm)")
         self.tab_template = self.tabview.add("📝 3. Kịch Bản Mẫu (Template)")
         self.tab_settings = self.tabview.add("🛡️ 4. Cài Đặt Hệ Thống & Telegram")
+        self.tab_comment = self.tabview.add("💬 5. Comment Theo Lượt Xem")
 
         self._build_tab_farm()
         self._build_tab_progress()
         self._build_tab_template()
         self._build_tab_settings()
+        self._build_tab_comment()
 
     def _build_tab_farm(self):
         tab = self.tab_farm
@@ -429,7 +446,8 @@ class AKPhoneApp(ctk.CTk):
             text=(
                 "💡 TÙY BIẾN KỊCH BẢN ĐỘNG:\n"
                 "• Mẫu kịch bản dùng chung cho toàn bộ dàn máy: template_script.txt & template_config.ini.\n"
-                "• Biến thay thế tự động theo từng máy/via: {ID} (vd page1fb1, page1fb2), {PAGE_NAME}, {VIDEO_DIR}, {CAPTION_PATH}, {COMMENT_PATH}."
+                "• Biến thay thế tự động theo từng máy/via: {ID} (vd page1fb1, page1fb2), {PAGE_NAME}, {VIDEO_DIR}, {CAPTION_PATH}, {COMMENT_PATH}, {LINK_PATH}.\n"
+                "• Kịch bản comment (template_cmt.txt) được tạo riêng thành SCRIPTS\\cmt{ID}.txt; tool chỉ đẩy link + comment khi bài đủ lượt xem (tab 5)."
             ),
             font=ctk.CTkFont(size=12),
             text_color="#38bdf8",
@@ -441,12 +459,16 @@ class AKPhoneApp(ctk.CTk):
 
         t_txt = sub_tab.add("Kịch Bản .TXT (template_script.txt)")
         t_ini = sub_tab.add("Cấu Hình .INI (template_config.ini)")
+        t_cmt = sub_tab.add("Kịch Bản Comment (template_cmt.txt)")
 
         self.tpl_txt_edit = ctk.CTkTextbox(t_txt, font=ctk.CTkFont(family="Consolas", size=12))
         self.tpl_txt_edit.pack(fill="both", expand=True, padx=6, pady=6)
 
         self.tpl_ini_edit = ctk.CTkTextbox(t_ini, font=ctk.CTkFont(family="Consolas", size=12))
         self.tpl_ini_edit.pack(fill="both", expand=True, padx=6, pady=6)
+
+        self.tpl_cmt_edit = ctk.CTkTextbox(t_cmt, font=ctk.CTkFont(family="Consolas", size=12))
+        self.tpl_cmt_edit.pack(fill="both", expand=True, padx=6, pady=6)
 
         self._load_templates_to_ui()
 
@@ -487,13 +509,22 @@ class AKPhoneApp(ctk.CTk):
         # AKPhone dir
         r1 = ctk.CTkFrame(grp_paths, fg_color="transparent")
         r1.pack(fill="x", padx=10, pady=3)
-        ctk.CTkLabel(r1, text="Thư mục AKPhone:", width=170, anchor="w").pack(side="left")
+        ctk.CTkLabel(r1, text="Thư mục AKPhone(S):", width=170, anchor="w").pack(side="left")
         self.entry_akphone_dir = ctk.CTkEntry(r1)
         self.entry_akphone_dir.pack(side="left", fill="x", expand=True, padx=6)
         self.entry_akphone_dir.insert(0, self.config.akphone_dir)
         ctk.CTkButton(r1, text="Chọn...", width=70, command=self._browse_akphone_dir).pack(
             side="left"
         )
+
+        r1b = ctk.CTkFrame(grp_paths, fg_color="transparent")
+        r1b.pack(fill="x", padx=10, pady=3)
+        self.var_write_offers = ctk.BooleanVar(value=self.config.write_offers)
+        ctk.CTkCheckBox(
+            r1b,
+            text="Tạo file cấu hình OFFERS\\{ID}.ini (chỉ AKPhone bản cũ cần; AKPhoneS không dùng)",
+            variable=self.var_write_offers,
+        ).pack(side="left", padx=(170, 0))
 
         # ADB path
         r2 = ctk.CTkFrame(grp_paths, fg_color="transparent")
@@ -933,12 +964,15 @@ class AKPhoneApp(ctk.CTk):
             )
             return False
 
-        scripts_dest = Path(ak_dir) / "SCRIPTS"
-        offers_dest = Path(ak_dir) / "OFFERS"
+        scripts_dest, offers_dest = resolve_akphone_layout(ak_dir)
         scripts_files_dest = scripts_dest / "FILES"
+        write_offers = self.config.write_offers and offers_dest is not None
+        if self.config.write_offers and offers_dest is None:
+            logger.warning(
+                f"Đã tích tạo OFFERS nhưng '{ak_dir}' không có thư mục OFFERS (AKPhoneS); bỏ qua file .ini."
+            )
 
         scripts_dest.mkdir(parents=True, exist_ok=True)
-        offers_dest.mkdir(parents=True, exist_ok=True)
         scripts_files_dest.mkdir(parents=True, exist_ok=True)
         Path(running_base).mkdir(parents=True, exist_ok=True)
 
@@ -949,7 +983,9 @@ class AKPhoneApp(ctk.CTk):
 
         page_names_map = parse_page_names_mapping(prof.page_names or self.config.page_names)
         txt_tpl = self.config.template_txt_path.read_text(encoding="utf-8")
-        ini_tpl = self.config.template_ini_path.read_text(encoding="utf-8")
+        ini_tpl = self.config.template_ini_path.read_text(encoding="utf-8") if write_offers else ""
+        cmt_path = self.config.template_cmt_path
+        cmt_tpl = cmt_path.read_text(encoding="utf-8") if cmt_path.is_file() else ""
 
         prof.pages_data = {}
         m_val = prof.fb_index or "1"
@@ -969,9 +1005,8 @@ class AKPhoneApp(ctk.CTk):
                 page_video_dir.mkdir(parents=True, exist_ok=True)
 
                 page_caption_filename = f"Caption_{page_id}.txt"
-                page_comment_filename = f"Comment_{page_id}.txt"
+                page_comment_filename = comment_filename(page_id)
                 ak_caption_path = str(scripts_files_dest / page_caption_filename)
-                ak_comment_path = str(scripts_files_dest / page_comment_filename)
 
                 final_txt = (
                     txt_tpl.replace("{ID}", page_id)
@@ -982,12 +1017,22 @@ class AKPhoneApp(ctk.CTk):
                 )
                 (scripts_dest / f"{page_id}.txt").write_text(final_txt, encoding="utf-8")
 
-                final_ini = (
-                    ini_tpl.replace("{ID}", page_id)
-                    .replace("{PAGE_NAME}", fanpage_name)
-                    .replace("{VIDEO_DIR}", str(page_video_dir))
-                )
-                (offers_dest / f"{page_id}.ini").write_text(final_ini, encoding="utf-8")
+                if cmt_tpl:
+                    final_cmt = (
+                        cmt_tpl.replace("{ID}", page_id)
+                        .replace("{PAGE_NAME}", fanpage_name)
+                        .replace("{LINK_PATH}", link_filename(page_id))
+                        .replace("{COMMENT_PATH}", page_comment_filename)
+                    )
+                    (scripts_dest / f"cmt{page_id}.txt").write_text(final_cmt, encoding="utf-8")
+
+                if write_offers:
+                    final_ini = (
+                        ini_tpl.replace("{ID}", page_id)
+                        .replace("{PAGE_NAME}", fanpage_name)
+                        .replace("{VIDEO_DIR}", str(page_video_dir))
+                    )
+                    (offers_dest / f"{page_id}.ini").write_text(final_ini, encoding="utf-8")
 
                 page_obj = PageInfo(
                     page_id=page_id,
@@ -998,7 +1043,6 @@ class AKPhoneApp(ctk.CTk):
                     posts=posts,
                     video_dir=str(page_video_dir),
                     caption_destinations=[ak_caption_path],
-                    comment_destinations=[ak_comment_path],
                     last_status="Ready",
                 )
                 prof.pages_data[page_id] = page_obj
@@ -1015,10 +1059,11 @@ class AKPhoneApp(ctk.CTk):
                     target_dict,
                     str(page_video_dir),
                     [ak_caption_path],
-                    [ak_comment_path],
+                    [],  # comment is pushed later, when the post reaches the view threshold
                     fanpage_name,
                     1,
                 )
+                queue_post_comment(self.comment_queue, serial, page_obj, 1, target_dict)
                 if "_payload_archive" in target_dict:
                     target_post.archive_dir = target_dict["_payload_archive"]
 
@@ -1036,10 +1081,25 @@ class AKPhoneApp(ctk.CTk):
             )
             return False
 
+    def _warn_if_offers_missing(self, ak_dir: str) -> bool:
+        """Tell the user when 'create OFFERS' is ticked but the AKPhone(S) folder has none."""
+        if not self.config.write_offers or not ak_dir or not os.path.isdir(ak_dir):
+            return False
+        if resolve_akphone_layout(ak_dir)[1] is not None:
+            return False
+        messagebox.showwarning(
+            "Không Có Thư Mục OFFERS",
+            f"Bạn đã tích 'Tạo file cấu hình OFFERS' nhưng '{ak_dir}' không có thư mục OFFERS.\n"
+            "AKPhoneS không dùng OFFERS nên tool sẽ bỏ qua file .ini (script vẫn được tạo bình thường).\n\n"
+            "Nếu đang dùng AKPhoneS, hãy bỏ tích ở Tab 4.",
+        )
+        return True
+
     def _init_scripts_for_selected_device(self):
         if not self.selected_serial:
             messagebox.showwarning("Cảnh báo", "Vui lòng chọn 1 thiết bị từ bảng bên trái!")
             return
+        self._warn_if_offers_missing(self.config.akphone_dir)
         if self._init_scripts_for_device(self.selected_serial):
             prof = self.device_profiles[self.selected_serial]
             self.device_tree.item(
@@ -1063,6 +1123,7 @@ class AKPhoneApp(ctk.CTk):
         if not self.device_profiles:
             messagebox.showwarning("Cảnh báo", "Chưa có thiết bị nào kết nối!")
             return
+        self._warn_if_offers_missing(self.config.akphone_dir)
         success_count = 0
         for serial, prof in self.device_profiles.items():
             if prof.enabled:
@@ -1312,6 +1373,10 @@ class AKPhoneApp(ctk.CTk):
         ini_path = self.config.template_ini_path
         txt_content = txt_path.read_text(encoding="utf-8") if txt_path.is_file() else ""
         ini_content = ini_path.read_text(encoding="utf-8") if ini_path.is_file() else ""
+        cmt_path = self.config.template_cmt_path
+        cmt_content = cmt_path.read_text(encoding="utf-8") if cmt_path.is_file() else ""
+        self.tpl_cmt_edit.delete("1.0", "end")
+        self.tpl_cmt_edit.insert("1.0", cmt_content)
         self.tpl_txt_edit.delete("1.0", "end")
         self.tpl_txt_edit.insert("1.0", txt_content)
         self.tpl_ini_edit.delete("1.0", "end")
@@ -1320,9 +1385,11 @@ class AKPhoneApp(ctk.CTk):
     def _save_templates_from_ui(self):
         txt_content = self.tpl_txt_edit.get("1.0", "end-1c")
         ini_content = self.tpl_ini_edit.get("1.0", "end-1c")
+        cmt_content = self.tpl_cmt_edit.get("1.0", "end-1c")
         try:
             self.config.template_txt_path.write_text(txt_content, encoding="utf-8")
             self.config.template_ini_path.write_text(ini_content, encoding="utf-8")
+            self.config.template_cmt_path.write_text(cmt_content, encoding="utf-8")
             messagebox.showinfo("Đã Lưu Mẫu", "Đã lưu kịch bản mẫu ra file thành công!")
         except Exception as e:
             messagebox.showerror("Lỗi", f"Không thể lưu file mẫu: {e}")
@@ -1337,6 +1404,7 @@ class AKPhoneApp(ctk.CTk):
             self.config.auto_clean_storage = bool(self.var_clean_storage.get())
             self.config.auto_clean_payloads = bool(self.var_clean_payloads.get())
             self.config.payload_retention_days = int(self.entry_retention_days.get().strip())
+            self.config.write_offers = bool(self.var_write_offers.get())
 
             self.config.telegram = TelegramConfig(
                 bot_token=self.entry_tg_token.get().strip(),
@@ -1348,6 +1416,7 @@ class AKPhoneApp(ctk.CTk):
             self.adb.socket_client.adb_path = self.config.adb_path
             self.config.save()
             messagebox.showinfo("Thành Công", "Đã lưu cấu hình hệ thống!")
+            self._warn_if_offers_missing(self.config.akphone_dir)
         except Exception as e:
             messagebox.showerror("Lỗi", f"Không thể lưu cài đặt: {e}")
 
@@ -1376,7 +1445,7 @@ class AKPhoneApp(ctk.CTk):
                 "Khôi Phục Tiến Độ",
                 f"Phát hiện phiên làm việc cũ gồm {len(devs)} máy.\nBạn có muốn khôi phục lại không?",
             ):
-                scripts_files_dest = Path(self.config.akphone_dir) / "SCRIPTS" / "FILES"
+                scripts_files_dest = resolve_akphone_layout(self.config.akphone_dir)[0] / "FILES"
                 for serial, s_data in devs.items():
                     if serial in self.device_profiles:
                         prof = self.device_profiles[serial]
@@ -1400,7 +1469,6 @@ class AKPhoneApp(ctk.CTk):
                                 "video_dir", str(Path(self.config.running_dir) / pid)
                             )
                             ak_caption = str(scripts_files_dest / f"Caption_{pid}.txt")
-                            ak_comment = str(scripts_files_dest / f"Comment_{pid}.txt")
 
                             prof.pages_data[pid] = PageInfo(
                                 page_id=pid,
@@ -1410,7 +1478,6 @@ class AKPhoneApp(ctk.CTk):
                                 current_idx=pdata["current_idx"],
                                 video_dir=page_video_dir,
                                 caption_destinations=[ak_caption],
-                                comment_destinations=[ak_comment],
                                 last_status=pdata.get("last_status", "Khôi phục"),
                                 posts=real_posts,
                             )

@@ -55,3 +55,44 @@
 - **Continuous Deployment (.github/workflows/build.yml)**:
   - Tự động chạy PyInstaller trên Windows runner khi push tag hoặc kích hoạt thủ công.
   - Tự động đóng gói `.zip` và tạo GitHub Release đính kèm file thực thi hoàn chỉnh.
+
+---
+
+## 5. Comment Khi Đủ Lượt Xem (tách khỏi script đăng bài)
+
+Script đăng bài (`template_script.txt`) không còn phần comment. Mỗi page có thêm script comment riêng
+`SCRIPTS\cmt{ID}.txt` sinh từ `template_cmt.txt` (biến `{LINK_PATH}` = `linkcmt{ID}.txt`,
+`{COMMENT_PATH}` = `Comment_{ID}.txt`).
+
+| Bước | Ai làm | Trạng thái bài |
+|---|---|---|
+| Cắt bài vào thư mục đệm: chỉ ghi caption, comment giữ trong hàng đợi | Feeder | `fed` |
+| Cờ `Done/{ID}.txt` bị xóa | Feeder | `posted` |
+| Luồng mới: 60 s sau khi đăng, đọc màn đầu tab Reels (không cuộn); reel mới được gán cho bài. Chưa thấy thì thử lại mỗi 4 phút (6 lần), sau đó theo chu kỳ view | `CommentTracker` | `linked` |
+| Luồng cũ: mỗi `views_interval_min` (60 phút) đọc 1 lần tab Reels của page, cuộn tới khi thấy đủ mọi reel đang theo dõi | `CommentTracker` | `linked` (cập nhật view) |
+| Lượt xem ≥ ngưỡng: ghi `linkcmt{ID}.txt` + `Comment_{ID}.txt` vào `SCRIPTS\FILES`, tạo cờ `CMT/{ID}.txt` | `CommentTracker` | `marked` |
+| Script comment xóa cờ `CMT/{ID}.txt` | AKPhoneS | `done` |
+| Cờ còn sau `cmt_timeout_s` / quá `expire_hours` chưa đủ view | `CommentTracker` | `failed` / `expired` |
+
+- Mỗi page chỉ có **1 việc comment tại một thời điểm**, nên file link/comment không bị ghi đè khi script đang đọc.
+- Trạng thái được ghi `marked` **trước** khi tạo cờ: tắt tool giữa chừng không gây comment 2 lần.
+- Hàng đợi lưu ở `configs/comment_queue.json`; phiên đăng nhập trình duyệt ở `configs/browser_profile/`.
+- Lần quét đầu của một page chỉ lấy mốc (mọi reel đang có là bài cũ). Bài đăng xong trước lần quét mốc
+  không xác định được link và được đánh `expired`.
+- Ghép reel mới với bài theo thứ tự đăng; nếu ai đó đăng tay reel khác xen giữa thì có thể ghép nhầm (log cảnh báo).
+- Gặp màn hình đăng nhập/checkpoint, hoặc không mở được trình duyệt (hồ sơ đang mở ở cửa sổ khác):
+  dừng quét, báo Telegram, không tự vượt. Không tự chuyển sang Chromium (bản đó không đọc được phiên
+  đăng nhập của Edge).
+
+**Hai luồng chạy song song:**
+
+- *Luồng cờ CMT* (mỗi 20 giây, không bao giờ chờ trình duyệt): cờ mất → `done`, quá hạn → `failed`,
+  hết hạn bài, đẩy link + comment khi đủ ngưỡng, lưu trữ việc đã xong quá 24 giờ sang
+  `configs/comment_archive/YYYY-MM-DD.jsonl`.
+- *Luồng quét* (mỗi lần 1 page, nghỉ 2–5 giây): ưu tiên lấy mốc → link bài mới → view (page quá hạn lâu nhất trước).
+
+**Tối ưu quét:** 1 tab dùng lại, chặn ảnh/video/font, đọc ngay khi ô reel xuất hiện, cuộn theo nhu cầu,
+khởi động lại trình duyệt sau 300 lần quét. Reel mới chỉ tính là các reel đứng **trước reel mới nhất đã
+biết**, nên cuộn sâu không biến reel cũ thành "mới". Đo thực tế (tài khoản đã đăng nhập): luồng mới ~2 s,
+luồng cũ cuộn tới reel thứ 30 ~3,5 s. Số lần mở trang tính theo page, không theo bài: 150 page ≈ 150 lượt/giờ
+cho view + khoảng 19 lượt/giờ cho bài mới.

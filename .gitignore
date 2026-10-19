@@ -30,6 +30,9 @@ logs/
 .transfer-work/
 session_state.json
 configs/session_state.json
+configs/comment_queue.json
+configs/comment_archive/
+configs/browser_profile*/
 
 # Environment variables
 .env

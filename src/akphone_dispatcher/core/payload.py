@@ -82,6 +82,15 @@ def clean_completed_payloads(
     return cleaned
 
 
+def read_flat_text(path: Union[str, Path]) -> str:
+    """Read a text file as one line (AKPhone reads one line per value)."""
+    return " ".join(
+        line.strip()
+        for line in Path(path).read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    )
+
+
 def recover_pending(running_root: Union[str, Path], source_root: Union[str, Path]) -> int:
     """Restore source files after a process was interrupted during source cleanup."""
     inventory = Path(source_root).resolve()
@@ -129,6 +138,9 @@ def transfer_payload(
 ) -> str:
     """Safely transfer video, caption, and comment payload.
 
+    ``comment_destinations`` may be empty: the comment is then only archived (the
+    comment tracker writes it later, once the post qualifies).
+
     1. Copies originals to .payload-store.
     2. Writes atomic copies into running video dir and caption/comment files.
     3. Verifies SHA-256 integrity.
@@ -151,8 +163,8 @@ def transfer_payload(
 
         captions = [Path(p).resolve() for p in caption_destinations if p]
         comments = [Path(p).resolve() for p in comment_destinations if p]
-        if not captions or not comments:
-            raise ValueError("Thiếu đường dẫn caption/comment đích; chưa thể chuyển bài.")
+        if not captions:
+            raise ValueError("Thiếu đường dẫn caption đích; chưa thể chuyển bài.")
 
         targets = [directory / sources["video_file"].name] + captions + comments
         if len(set(targets)) != len(targets):
@@ -206,21 +218,13 @@ def transfer_payload(
 
         # Normalize caption & comment text (flatten newlines for AKPhone compatibility)
         caption = (
-            " ".join(
-                line.strip()
-                for line in raw["caption_file"].read_text(encoding="utf-8").splitlines()
-                if line.strip()
-            )
+            read_flat_text(raw["caption_file"])
             if "caption_file" in raw
             else f"Bài đăng #{position} cho {page_name}"
         )
 
         comment = (
-            " ".join(
-                line.strip()
-                for line in raw["comment_file"].read_text(encoding="utf-8").splitlines()
-                if line.strip()
-            )
+            read_flat_text(raw["comment_file"])
             if "comment_file" in raw
             else f"Bình luận #{position} cho {page_name}"
         )

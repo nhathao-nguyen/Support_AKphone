@@ -1,11 +1,12 @@
 """Dynamic application settings and configuration manager with multi-device farm support."""
 
+from dataclasses import asdict, fields
 import json
 import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from akphone_dispatcher.core.models import TelegramConfig
+from akphone_dispatcher.core.models import CommentConfig, TelegramConfig
 from akphone_dispatcher.utils.helpers import (
     find_adb_executable,
     find_akphone_root,
@@ -23,6 +24,9 @@ class AppConfig:
         self.config_path = self._resolve_config_path(config_path)
         self.template_txt_path = self._resolve_template_path("template_script.txt")
         self.template_ini_path = self._resolve_template_path("template_config.ini")
+        self.template_cmt_path = self._resolve_template_path("template_cmt.txt")
+        self.comment_queue_path = self.config_path.parent / "comment_queue.json"
+        self.browser_profile_dir = self.config_path.parent / "browser_profile"
 
         # Global system paths (zero hardcoding, no C: fallback)
         self.source_dir: str = ""
@@ -38,7 +42,9 @@ class AppConfig:
         self.auto_clean_storage: bool = True
         self.auto_clean_payloads: bool = True
         self.payload_retention_days: int = 0
+        self.write_offers: bool = False  # .ini in OFFERS (AKPhone only; AKPhoneS has none)
         self.telegram = TelegramConfig()
+        self.comment = CommentConfig()
 
         # Multi-Device Profiles mapping: serial -> {fb_index, source_dir, page_names, enabled}
         self.device_profiles: Dict[str, Dict[str, Any]] = {}
@@ -136,6 +142,8 @@ class AppConfig:
                 data.get("payload_retention_days", self.payload_retention_days)
             )
 
+            self.write_offers = bool(data.get("write_offers", self.write_offers))
+
             # Multi-device profiles
             self.device_profiles = data.get("device_profiles", {})
 
@@ -148,6 +156,11 @@ class AppConfig:
                 notify_on_success=bool(tg.get("notify_on_success", True)),
                 notify_on_error=bool(tg.get("notify_on_error", True)),
                 send_screenshots=bool(tg.get("send_screenshots", True)),
+            )
+
+            cm = data.get("comment", {})
+            self.comment = CommentConfig(
+                **{f.name: cm[f.name] for f in fields(CommentConfig) if f.name in cm}
             )
 
             self._apply_auto_discovery()
@@ -185,6 +198,7 @@ class AppConfig:
             "auto_clean_storage": self.auto_clean_storage,
             "auto_clean_payloads": self.auto_clean_payloads,
             "payload_retention_days": self.payload_retention_days,
+            "write_offers": self.write_offers,
             "device_profiles": self.device_profiles,
             "telegram": {
                 "bot_token": self.telegram.bot_token,
@@ -194,6 +208,7 @@ class AppConfig:
                 "notify_on_error": self.telegram.notify_on_error,
                 "send_screenshots": self.telegram.send_screenshots,
             },
+            "comment": asdict(self.comment),
         }
         try:
             self.config_path.parent.mkdir(parents=True, exist_ok=True)
