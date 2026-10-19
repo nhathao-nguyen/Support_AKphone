@@ -4,6 +4,7 @@ from datetime import datetime
 import os
 from pathlib import Path
 import threading
+import traceback
 from typing import Callable, List, Optional
 
 
@@ -18,7 +19,22 @@ class AppLogger:
             log_dir = get_app_base_dir() / "logs"
         self.log_dir = Path(log_dir)
         self.log_file = self.log_dir / "app.log"
+        self.max_bytes = 10 * 1024 * 1024  # app.log -> app.log.1 ... app.log.5, oldest dropped
+        self.keep_files = 5
         self._ensure_log_file()
+
+    def _rotate(self):
+        """Called with the lock held, once app.log passes max_bytes."""
+        for i in range(self.keep_files, 0, -1):
+            older = self.log_dir / f"app.log.{i}"
+            if i == self.keep_files:
+                older.unlink(missing_ok=True)
+            else:
+                newer = self.log_dir / f"app.log.{i + 1}"
+                if older.exists():
+                    os.replace(older, newer)
+        os.replace(self.log_file, self.log_dir / "app.log.1")
+        self.log_file.touch()
 
     def _ensure_log_file(self):
         try:
@@ -45,14 +61,20 @@ class AppLogger:
         entry = f"[{time_short}] [{level}] {message}"
         file_entry = f"[{now_str}] [{level}] {message}\n"
 
-        # 1. Console print
-        print(entry)
+        # 1. Console print (a console that cannot show emoji must never break logging)
+        try:
+            print(entry)
+        except Exception:
+            pass
 
         # 2. File write
         with self.lock:
             try:
                 with open(self.log_file, "a", encoding="utf-8") as f:
                     f.write(file_entry)
+                    size = f.tell()
+                if size > self.max_bytes:
+                    self._rotate()
             except Exception:
                 pass
 
@@ -69,7 +91,9 @@ class AppLogger:
     def warning(self, msg: str):
         self.log("WARN", msg)
 
-    def error(self, msg: str):
+    def error(self, msg: str, exc_info: bool = False):
+        if exc_info:
+            msg = f"{msg}\n{traceback.format_exc().rstrip()}"
         self.log("ERROR", msg)
 
     def debug(self, msg: str):

@@ -9,7 +9,7 @@ import shutil
 import tempfile
 import threading
 import time
-from typing import Dict, List, Union
+from typing import Dict, Iterable, List, Optional, Union
 import uuid
 
 from akphone_dispatcher.utils.logger import logger
@@ -29,6 +29,7 @@ def digest(path: Union[str, Path]) -> str:
 def clean_completed_payloads(
     running_root: Union[str, Path],
     max_age_days: int = 0,
+    keep: Optional[Iterable[Union[str, Path]]] = None,
 ) -> int:
     """Purge completed archive payloads to prevent unbounded disk usage.
 
@@ -36,6 +37,7 @@ def clean_completed_payloads(
         running_root: Root directory where .payload-store resides.
         max_age_days: If 0, delete all payloads marked as 'complete'.
             If > 0, only delete payloads completed more than max_age_days ago.
+        keep: payload directories never deleted here (posts that may be re-posted).
 
     Returns:
         Number of payload directories cleaned up.
@@ -44,6 +46,7 @@ def clean_completed_payloads(
     if not store_root.is_dir():
         return 0
 
+    kept = {str(Path(p).resolve()) for p in (keep or ()) if p}
     cleaned = 0
     now = time.time()
     cutoff_seconds = max_age_days * 86400
@@ -64,6 +67,8 @@ def clean_completed_payloads(
                     continue
 
                 payload_dir = manifest_path.parent
+                if str(payload_dir.resolve()) in kept:
+                    continue
                 shutil.rmtree(payload_dir, ignore_errors=True)
                 cleaned += 1
 
@@ -158,6 +163,9 @@ def transfer_payload(
         }
         if "video_file" not in sources or any(not p.is_file() for p in sources.values()):
             raise ValueError("Thiếu file nguồn; chưa thể chuyển bài khỏi kho.")
+        if "caption_file" not in sources:
+            # never post a made-up caption: the store is missing this post's caption file
+            raise ValueError("Bài này không có caption cùng số trong kho; chưa thể chuyển bài.")
         if position < 1:
             raise ValueError("Số thứ tự bài phải lớn hơn 0.")
 
@@ -217,11 +225,7 @@ def transfer_payload(
                     raise ValueError("Bản sao chép không khớp hash nguồn; giữ nguyên kho bài.")
 
         # Normalize caption & comment text (flatten newlines for AKPhone compatibility)
-        caption = (
-            read_flat_text(raw["caption_file"])
-            if "caption_file" in raw
-            else f"Bài đăng #{position} cho {page_name}"
-        )
+        caption = read_flat_text(raw["caption_file"])
 
         comment = (
             read_flat_text(raw["comment_file"])

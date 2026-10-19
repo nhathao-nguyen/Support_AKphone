@@ -28,7 +28,7 @@ def test_adb_resolve_target_device_specific():
 
 def test_adb_list_done_flags_parsing():
     service = AdbService(adb_path="mock_adb.exe")
-    fake_output = "page1fb1.txt\npage2fb1.txt\nround_done.txt\n"
+    fake_output = "page1fb1.txt\npage2fb1.txt\nround_done.txt\n__AKLS_RC=0"
 
     with patch.object(service, "run_shell", return_value=fake_output):
         flags = service.list_done_flags("DEV_001")

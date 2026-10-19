@@ -33,10 +33,29 @@ class PageInfo:
     caption_destinations: List[str] = field(default_factory=list)
     comment_destinations: List[str] = field(default_factory=list)
     last_status: str = "Ready"
+    page_url: str = ""  # Fanpage link, used to find the reels and read their views
+    # Last post confirmed live (its Done flag vanished). posted_idx >= current_idx means
+    # the running dir still holds a post that is already live: never flag it again.
+    posted_idx: int = 0
+    feed_error: str = ""  # why the next post could not be loaded ("" = none)
+    fail_streak: int = 0  # rounds in a row this page failed (skip / timeout)
+    paused_reason: str = ""  # set after too many failed rounds: left out until Start again
 
     @property
     def is_completed(self) -> bool:
         return self.current_idx > self.total_posts
+
+    @property
+    def needs_feed(self) -> bool:
+        """Current post already live, next one not loaded yet."""
+        return not self.is_completed and self.posted_idx >= self.current_idx
+
+    @property
+    def ready_to_post(self) -> bool:
+        """The running dir holds a post that has not gone live yet."""
+        return (
+            not self.is_completed and self.posted_idx < self.current_idx and not self.paused_reason
+        )
 
 
 @dataclass
@@ -67,6 +86,7 @@ class DeviceProfile:
     source_dir: str = ""
     running_dir: str = ""
     page_names: str = ""
+    page_links: str = ""  # Fanpage links, line by line next to page_names
     pages_data: Dict[str, PageInfo] = field(default_factory=dict)
     enabled: bool = True
     status: str = "Chưa khởi tạo"
@@ -132,7 +152,10 @@ class CommentConfig:
     scan_gap_min_s: float = 2.0  # pause between two page loads
     scan_gap_max_s: float = 5.0
     archive_after_hours: int = 24  # finished jobs stay in the table this long
+    # a reel is a post only if created between these minutes before / after its Done
+    # flag vanished (the script removes the flag right after posting)
+    verify_before_min: int = 30
+    verify_after_min: int = 15
     flag_dir: str = "/storage/emulated/0/Android/CMT"
     headless: bool = True
     browser_channel: str = "msedge"
-    page_urls: str = ""  # one "Tên Fanpage: https://www.facebook.com/..." per line

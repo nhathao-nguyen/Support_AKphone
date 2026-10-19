@@ -20,6 +20,8 @@ from akphone_dispatcher.services.notifier import TelegramNotifier
 from akphone_dispatcher.services.session import SessionManager
 from akphone_dispatcher.utils.logger import logger
 
+FEED_RETRY_S = 60  # retry a failed feed this often (the user may fix the store meanwhile)
+
 
 def queue_post_comment(
     comment_queue: Optional[CommentQueue],
@@ -38,6 +40,10 @@ def queue_post_comment(
         return
     if not text:
         return
+    try:  # kept to prove later which reel is this post (caption match)
+        caption = read_flat_text(transferred["caption_file"]) if transferred.get("caption_file") else ""
+    except Exception:
+        caption = ""
     comment_queue.add_fed(
         serial=serial,
         page_id=p_info.page_id,
@@ -45,6 +51,13 @@ def queue_post_comment(
         post_num=post_idx,
         video_name=Path(transferred["video_file"]).name,
         comment_text=text,
+        page_url=p_info.page_url,
+        archive={
+            "dir": transferred.get("_payload_archive") or "",
+            "video": transferred.get("video_file") or "",
+            "caption": transferred.get("caption_file") or "",
+        },
+        caption_text=caption,
     )
 
 
@@ -83,15 +96,27 @@ class DeviceFeederWorker:
         self.pending_feed: Dict[str, Any] = {}
         self.sentinel_active = False
         self.last_flag_change_time = time.time()
+        self.feed_retry_at: Dict[str, float] = {}  # page -> next try after a failed feed
+        self._timeouts_in_row = 0  # watchdog fired with no flag removed since
 
     def start(self):
         self.stop_event.clear()
+        resumed = [pid for pid, info in self.profile.pages_data.items() if info.paused_reason]
+        for info in self.profile.pages_data.values():  # Start again = give paused pages a new try
+            info.paused_reason = ""
+            info.fail_streak = 0
+        if resumed:
+            logger.info(
+                f"▶️ [MÁY {self.serial}] Chạy lại cả các page đã tạm ngưng vì lỗi liên tiếp: {', '.join(resumed)}"
+            )
+        self._timeouts_in_row = 0
         self.round_number = 0
         self.round_succeeded = set()
         self.round_failed = set()
         self.current_round_flags = set()
         self.pending_feed = {}
         self.sentinel_active = False
+        self.feed_retry_at = {}
         self.thread = threading.Thread(
             target=self._run, name=f"Worker-{self.serial}-{self.profile.via_tag}", daemon=True
         )
@@ -109,24 +134,34 @@ class DeviceFeederWorker:
     def is_running(self) -> bool:
         return self.thread is not None and self.thread.is_alive() and not self.stop_event.is_set()
 
+    def _save_progress(self):
+        """Persist this phone's progress right away: a power cut resumes from here."""
+        try:
+            self.session_manager.save_device(self.serial, self.profile)
+        except Exception as e:
+            logger.error(f"Không lưu được tiến độ máy {self.serial}: {e}")
+
     def _feed_post(self, page_id: str, post_idx: int) -> bool:
         """Advance payload to the next post index for this device's page."""
         p_info = self.profile.pages_data.get(page_id)
-        if not p_info or post_idx < 1 or post_idx > len(p_info.posts):
+        if not p_info:
+            return False
+        if post_idx < 1 or post_idx > len(p_info.posts):
+            self._feed_failed(p_info, post_idx, "không có dữ liệu bài này (kho nguồn thiếu bài)")
             return False
 
         target_post = p_info.posts[post_idx - 1]
         captions = p_info.caption_destinations or []
 
+        target_dict = {
+            "post_num": target_post.post_num,
+            "video_file": target_post.video_file,
+            "caption_file": target_post.caption_file,
+            "comment_file": target_post.comment_file,
+            "_payload_archive": getattr(target_post, "archive_dir", None),
+        }
         try:
-            target_dict = {
-                "post_num": target_post.post_num,
-                "video_file": target_post.video_file,
-                "caption_file": target_post.caption_file,
-                "comment_file": target_post.comment_file,
-                "_payload_archive": getattr(target_post, "archive_dir", None),
-            }
-            archive = transfer_payload(
+            transfer_payload(
                 target_dict,
                 p_info.video_dir,
                 captions,
@@ -134,49 +169,139 @@ class DeviceFeederWorker:
                 p_info.fanpage_name,
                 post_idx,
             )
-            queue_post_comment(self.comment_queue, self.serial, p_info, post_idx, target_dict)
-            p_info.current_idx = post_idx
-            p_info.last_status = f"Đã nạp Bài {post_idx}"
+        except Exception as e:
+            self._feed_failed(p_info, post_idx, str(e))
+            return False
+        p_info.current_idx = post_idx
+        p_info.feed_error = ""
+        p_info.last_status = f"Đã nạp Bài {post_idx}"
+        self.feed_retry_at.pop(page_id, None)
+        self._save_progress()  # the source just left the store: record it at once
+        queue_post_comment(self.comment_queue, self.serial, p_info, post_idx, target_dict)
+        logger.info(
+            f"✂ [MÁY {self.serial} | {self.profile.via_tag}] Đã chuyển bài {post_idx} của [{page_id}] khỏi kho."
+        )
+        return True
+
+    def _feed_failed(self, p_info: PageInfo, post_idx: int, reason: str):
+        """The next post could not be loaded: keep the page out of the rounds.
+
+        Its running dir still holds the post that is already live, so flagging the page
+        again would post that video twice. The feed is retried every FEED_RETRY_S.
+        """
+        page_id = p_info.page_id
+        first_time = p_info.feed_error != reason
+        p_info.feed_error = reason
+        p_info.last_status = f"❌ Lỗi nạp bài {post_idx}: tạm ngưng page"
+        self.feed_retry_at[page_id] = time.time() + FEED_RETRY_S
+        self._save_progress()
+        if not first_time:
+            return
+        logger.error(
+            f"❌ [MÁY {self.serial} | {self.profile.via_tag}] Không nạp được bài {post_idx} cho "
+            f"[{page_id}]: {reason}. Page tạm ngưng (không đăng lại bài cũ); tự thử lại mỗi "
+            f"{FEED_RETRY_S}s."
+        )
+        self.notifier.send_message(
+            f"❌ <b>[LỖI NẠP BÀI]</b>\n"
+            f"• Thiết bị: <code>{self.serial}</code> ({self.profile.via_tag})\n"
+            f"• Fanpage: <b>{p_info.fanpage_name}</b> ({page_id}) bài {post_idx}\n"
+            f"• Lý do: {reason}\n"
+            f"• Page tạm ngưng để không đăng trùng bài cũ; tool tự thử lại."
+        )
+
+    def _advance_page(self, page_id: str) -> bool:
+        """The page's current post is live: load the next one, or close the page."""
+        info = self.profile.pages_data[page_id]
+        if info.current_idx >= info.total_posts:
+            info.current_idx = info.total_posts + 1
+            info.feed_error = ""
+            info.last_status = "🎉 Hết bài"
+            self._save_progress()
             logger.info(
-                f"✂ [MÁY {self.serial} | {self.profile.via_tag}] Đã chuyển bài {post_idx} của [{page_id}] khỏi kho."
+                f"✅ [MÁY {self.serial}] [{page_id}] hoàn tất toàn bộ {info.total_posts} bài!"
             )
             return True
-        except Exception as e:
-            logger.error(
-                f"Lỗi khi chuyển bài cho [{page_id}] trên máy {self.serial}: {e}"
-            )
-            return False
-
-    def _init_done_round(self) -> bool:
-        """Seed indicator flag files specifically onto THIS phone."""
-        self.round_number += 1
-        self.profile.round_number = self.round_number
-
-        self.active_round_pages = [
-            pid
-            for pid, info in self.profile.pages_data.items()
-            if info.current_idx <= info.total_posts
-        ]
-        if not self.active_round_pages:
-            return False
-
-        self.current_round_flags = set(self.active_round_pages)
-        self.round_succeeded = set()
-        self.round_failed = set()
-        self.pending_feed = {}
-        self.last_flag_change_time = time.time()
-
-        if self.adb.init_round_flags(self.serial, self.active_round_pages):
-            self.sentinel_active = True
-            flags_str = ", ".join(self.active_round_pages)
+        next_idx = info.current_idx + 1
+        if self._feed_post(page_id, next_idx):
             logger.info(
-                f"🚩 [MÁY {self.serial} | {self.profile.via_tag} | VÒNG {self.round_number}] "
-                f"Đã nạp {len(self.active_round_pages)} cờ Done lên điện thoại ({flags_str})."
+                f"⚡ [MÁY {self.serial}] Đã bơm bài mới {next_idx}/{info.total_posts} cho [{page_id}]!"
             )
             return True
         return False
 
-    def _capture_and_notify_error(self, pid: str, reason: str):
+    def _retry_pending_feeds(self):
+        """Load the next post of pages whose current post is live but not followed yet
+        (feed failed earlier, or the tool stopped between posting and feeding)."""
+        now = time.time()
+        for pid, info in self.profile.pages_data.items():
+            if info.needs_feed and self.feed_retry_at.get(pid, 0) <= now:
+                self._advance_page(pid)
+
+    def _init_done_round(self) -> bool:
+        """Seed indicator flag files specifically onto THIS phone.
+
+        Only pages whose running dir holds a post not yet live take part.
+        """
+        self._retry_pending_feeds()
+        active = [pid for pid, info in self.profile.pages_data.items() if info.ready_to_post]
+        if not active:
+            return False
+        if not self.adb.init_round_flags(self.serial, active):
+            return False
+
+        self.round_number += 1
+        self.profile.round_number = self.round_number
+        self.active_round_pages = active
+        self.current_round_flags = set(active)
+        self.round_succeeded = set()
+        self.round_failed = set()
+        self.pending_feed = {}
+        self.last_flag_change_time = time.time()
+        self.sentinel_active = True
+        self._save_progress()
+        logger.info(
+            f"🚩 [MÁY {self.serial} | {self.profile.via_tag} | VÒNG {self.round_number}] "
+            f"Đã nạp {len(active)} cờ Done lên điện thoại ({', '.join(active)})."
+        )
+        return True
+
+    def _all_posted(self) -> bool:
+        return all(info.is_completed for info in self.profile.pages_data.values())
+
+    def _pages_failed(self, pids: List[str], status: str, reason: str):
+        """These pages failed this round: one screenshot + alert + Facebook restart for all,
+        and a page failing MAX rounds in a row is paused instead of retried forever."""
+        if not pids:
+            return
+        limit = max(1, int(getattr(self.config, "max_page_fail_rounds", 3) or 3))
+        paused = []
+        for pid in pids:
+            self.current_round_flags.discard(pid)
+            self.round_failed.add(pid)
+            info = self.profile.pages_data[pid]
+            info.fail_streak = (info.fail_streak or 0) + 1
+            info.last_status = status
+            logger.warning(f"⚠️ [MÁY {self.serial}] [{pid}] {status}: {reason} (lỗi {info.fail_streak} vòng liên tiếp)")
+            if info.fail_streak >= limit:
+                info.paused_reason = f"Lỗi {info.fail_streak} vòng liên tiếp ({status})"
+                info.last_status = f"⛔ Tạm ngưng: lỗi {info.fail_streak} vòng liên tiếp"
+                paused.append(pid)
+        self._capture_and_notify_error(pids[0], reason, pids)
+        if paused:
+            message = (
+                f"⛔ <b>[PAGE TẠM NGƯNG]</b>\n• Thiết bị: <code>{self.serial}</code> ({self.profile.via_tag})\n"
+                f"• Page: {', '.join(paused)}\n• Lỗi {limit} vòng liên tiếp, tool không chạy lại nữa.\n"
+                "• Sửa xong thì Dừng rồi Chạy lại máy này để thử lại."
+            )
+            logger.error(
+                f"⛔ [MÁY {self.serial}] Tạm ngưng {', '.join(paused)} sau {limit} vòng lỗi liên tiếp. "
+                "Sửa xong thì Dừng rồi Chạy lại máy để thử lại."
+            )
+            self.notifier.send_message(message)
+        self._save_progress()
+
+    def _capture_and_notify_error(self, pid: str, reason: str, pids: Optional[List[str]] = None):
         """Take screenshot of device and alert user via Telegram."""
         now_ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         log_dir = self.config.base_dir / "logs" / "screenshots"
@@ -185,10 +310,13 @@ class DeviceFeederWorker:
         if self.config.auto_screencap:
             self.adb.take_screenshot(self.serial, screencap_file)
 
+        pages = ", ".join(
+            f"{self.profile.pages_data.get(p, PageInfo('', '', p, 0)).fanpage_name} ({p})" for p in (pids or [pid])
+        )
         msg = (
             f"⚠️ <b>[CẢNH BÁO LỖI DÀN MÁY]</b>\n"
             f"• Thiết bị: <code>{self.serial}</code> ({self.profile.via_tag})\n"
-            f"• Fanpage: <b>{self.profile.pages_data.get(pid, PageInfo('', '', pid, 0)).fanpage_name}</b> ({pid})\n"
+            f"• Fanpage: <b>{pages}</b>\n"
             f"• Lý do: {reason}\n"
             f"• Watchdog đã kích hoạt tự phục hồi trên máy này."
         )
@@ -241,8 +369,18 @@ class DeviceFeederWorker:
             # Initialize first round on this phone
             if not round_initialized:
                 if not self._init_done_round():
+                    if self._all_posted():
+                        self.profile.status = "🎉 Hoàn tất toàn bộ"
+                        break
+                    if any(info.feed_error for info in self.profile.pages_data.values()):
+                        self.profile.status = "⚠️ Chờ sửa lỗi nạp bài"
+                        self.on_progress_update()
+                    elif any(info.paused_reason for info in self.profile.pages_data.values()):
+                        self.profile.status = "⛔ Page tạm ngưng (lỗi liên tiếp)"
+                        self.on_progress_update()
                     time.sleep(2)
                     continue
+                self.profile.status = "🟢 Đang chạy"
                 round_initialized = True
                 self.on_progress_update()
                 continue
@@ -261,16 +399,9 @@ class DeviceFeederWorker:
                     logger.info(
                         f"🎯 [MÁY {self.serial} | {self.profile.via_tag}] Cờ chốt sổ [round_done.txt] ĐÃ BỊ XÓA!"
                     )
-
-                    if self.current_round_flags:
-                        for stuck_pid in list(self.current_round_flags):
-                            self.current_round_flags.discard(stuck_pid)
-                            self.round_failed.add(stuck_pid)
-                            self.profile.pages_data[stuck_pid].last_status = "Lỗi (Bỏ qua)"
-                            self._capture_and_notify_error(
-                                stuck_pid, "Cờ chưa kịp xóa khi chạm cờ chốt sổ"
-                            )
-                        self.on_progress_update()
+                    # Pages still flagged are only marked failed AFTER the flags removed in
+                    # this same poll count as done (step 2b): removedone.txt runs right after
+                    # the last page, so both flags often vanish within one poll.
 
                 # Flags removed in current round on this phone
                 disappeared = [
@@ -281,22 +412,20 @@ class DeviceFeederWorker:
 
                 if disappeared:
                     self.last_flag_change_time = time.time()
+                    self._timeouts_in_row = 0
 
                 for pid in disappeared:
                     target_idx = self.active_round_pages.index(pid)
 
                     # 1. Skip / Jump detection
-                    for prev_pid in self.active_round_pages[:target_idx]:
-                        if prev_pid in self.current_round_flags:
-                            self.current_round_flags.discard(prev_pid)
-                            self.round_failed.add(prev_pid)
-                            self.profile.pages_data[prev_pid].last_status = "Bị bỏ qua/Lỗi"
-                            logger.warning(
-                                f"⚠️ [MÁY {self.serial}] Phát hiện [{prev_pid}] bị bỏ qua/lỗi kịch bản!"
-                            )
-                            self._capture_and_notify_error(
-                                prev_pid, "Bị nhảy cóc/kịch bản đứng trước bị lỗi"
-                            )
+                    skipped = [
+                        prev_pid for prev_pid in self.active_round_pages[:target_idx]
+                        if prev_pid in self.current_round_flags
+                    ]
+                    if skipped:
+                        self._pages_failed(
+                            skipped, "Bị bỏ qua/Lỗi", "Bị nhảy cóc/kịch bản đứng trước bị lỗi"
+                        )
 
                     # 2. Page succeeded
                     self.current_round_flags.discard(pid)
@@ -305,6 +434,9 @@ class DeviceFeederWorker:
                     c_idx = info.current_idx
                     total = info.total_posts
                     info.last_status = f"Hoàn tất Bài {c_idx}"
+                    info.posted_idx = max(info.posted_idx, c_idx)
+                    info.fail_streak = 0
+                    self._save_progress()  # never flag this post again, even after a crash
                     if self.comment_queue is not None:
                         self.comment_queue.mark_posted(self.serial, pid)
                     logger.info(
@@ -318,6 +450,12 @@ class DeviceFeederWorker:
                         "c_idx": c_idx,
                         "total": total,
                     }
+                    self.on_progress_update()
+
+                # 2b. Sentinel reached: pages whose flag is still there failed this round
+                if sentinel_triggered and self.current_round_flags:
+                    stuck = [p for p in self.active_round_pages if p in self.current_round_flags]
+                    self._pages_failed(stuck, "Lỗi (Bỏ qua)", "Cờ chưa kịp xóa khi chạm cờ chốt sổ")
                     self.on_progress_update()
 
                 # Process safe delayed feed
@@ -334,21 +472,8 @@ class DeviceFeederWorker:
                             to_feed.append(p_key)
 
                     for p_key in to_feed:
-                        pdata = self.pending_feed.pop(p_key)
-                        c_idx = pdata["c_idx"]
-                        total = pdata["total"]
-                        if c_idx < total:
-                            next_idx = c_idx + 1
-                            if self._feed_post(p_key, next_idx):
-                                logger.info(
-                                    f"⚡ [MÁY {self.serial}] Đã bơm bài mới {next_idx}/{total} cho [{p_key}]!"
-                                )
-                        else:
-                            self.profile.pages_data[p_key].current_idx = total + 1
-                            self.profile.pages_data[p_key].last_status = "🎉 Hết bài"
-                            logger.info(
-                                f"✅ [MÁY {self.serial}] [{p_key}] hoàn tất toàn bộ {total} bài!"
-                            )
+                        self.pending_feed.pop(p_key)
+                        self._advance_page(p_key)
                         self.on_progress_update()
 
                 # 3. Timeout Watchdog
@@ -356,29 +481,29 @@ class DeviceFeederWorker:
                 if self.current_round_flags and (
                     time.time() - self.last_flag_change_time > timeout_limit
                 ):
-                    for stuck_pid in list(self.current_round_flags):
-                        self.current_round_flags.discard(stuck_pid)
-                        self.round_failed.add(stuck_pid)
-                        self.profile.pages_data[stuck_pid].last_status = "Timeout treo máy"
-                        logger.warning(
-                            f"⏱️ [MÁY {self.serial}] [{stuck_pid}] quá {timeout_limit}s không phản hồi. Watchdog kích hoạt."
+                    waiting = [p for p in self.active_round_pages if p in self.current_round_flags]
+                    if self._timeouts_in_row == 0:
+                        # the page AKPhoneS is on is stuck: only that one failed; Facebook is
+                        # restarted and the next pages get a fresh window
+                        self._pages_failed(
+                            waiting[:1], "Timeout treo máy", f"Treo quá {timeout_limit} giây không phản hồi"
                         )
-                        self._capture_and_notify_error(
-                            stuck_pid, f"Treo quá {timeout_limit} giây không phản hồi"
+                    else:
+                        # still nothing after the recovery: AKPhoneS is not running this round
+                        self._pages_failed(
+                            waiting, "Timeout treo máy",
+                            f"Không page nào chạy tiếp sau khi tự phục hồi ({timeout_limit} giây)",
                         )
+                    self._timeouts_in_row += 1
+                    self.last_flag_change_time = time.time()
                     self.on_progress_update()
 
                 # 4. End of round check
                 processed_count = len(self.round_succeeded) + len(self.round_failed)
                 if processed_count >= len(self.active_round_pages) or sentinel_triggered:
                     # Flush pending feeds
-                    for p_key, pdata in list(self.pending_feed.items()):
-                        c_idx = pdata["c_idx"]
-                        total = pdata["total"]
-                        if c_idx < total:
-                            self._feed_post(p_key, c_idx + 1)
-                        else:
-                            self.profile.pages_data[p_key].current_idx = total + 1
+                    for p_key in list(self.pending_feed):
+                        self._advance_page(p_key)
                     self.pending_feed.clear()
                     self.on_progress_update()
 
@@ -392,7 +517,10 @@ class DeviceFeederWorker:
 
                     if getattr(self.config, "auto_clean_payloads", True):
                         retention_days = getattr(self.config, "payload_retention_days", 0)
-                        clean_completed_payloads(self.config.running_dir, max_age_days=retention_days)
+                        keep = self.comment_queue.protected_archives() if self.comment_queue else None
+                        clean_completed_payloads(
+                            self.config.running_dir, max_age_days=retention_days, keep=keep
+                        )
 
                     if self.config.telegram.enabled:
                         round_msg = (
@@ -404,9 +532,7 @@ class DeviceFeederWorker:
                         self.notifier.send_message(round_msg)
 
                     still_has_posts = [
-                        p
-                        for p, inf in self.profile.pages_data.items()
-                        if inf.current_idx <= inf.total_posts
+                        p for p, inf in self.profile.pages_data.items() if not inf.is_completed
                     ]
                     if not still_has_posts:
                         self.profile.status = "🎉 Hoàn tất toàn bộ"
@@ -427,9 +553,11 @@ class DeviceFeederWorker:
                             round_initialized = False
 
             except Exception as e:
-                logger.error(f"Lỗi worker máy {self.serial}: {e}")
+                logger.error(f"Lỗi worker máy {self.serial}: {e}", exc_info=True)
 
-        self.profile.status = "⏹️ Đã dừng"
+        if self.stop_event.is_set() or not self._all_posted():
+            self.profile.status = "⏹️ Đã dừng"
+        self._save_progress()
         self.on_progress_update()
 
 

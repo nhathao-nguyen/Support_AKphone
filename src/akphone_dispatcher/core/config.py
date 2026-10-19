@@ -27,6 +27,7 @@ class AppConfig:
         self.template_cmt_path = self._resolve_template_path("template_cmt.txt")
         self.comment_queue_path = self.config_path.parent / "comment_queue.json"
         self.browser_profile_dir = self.config_path.parent / "browser_profile"
+        self.fb_profiles_path = self.config_path.parent / "fb_profiles.json"
 
         # Global system paths (zero hardcoding, no C: fallback)
         self.source_dir: str = ""
@@ -38,10 +39,14 @@ class AppConfig:
         self.page_names: str = "page-1: Reel of Life\npage-2: Behind Closed Doors"
         self.target_device: str = "auto"
         self.watchdog_timeout: int = 360
+        self.max_page_fail_rounds: int = 3  # a page failing this many rounds in a row is paused
         self.auto_screencap: bool = True
         self.auto_clean_storage: bool = True
         self.auto_clean_payloads: bool = True
         self.payload_retention_days: int = 0
+        self.screenshot_keep_days: int = 7  # logs/screenshots older than this are deleted
+        self.archive_keep_days: int = 30  # configs/comment_archive/*.jsonl older than this
+        self.browser_cache_max_mb: int = 300  # browser caches are emptied above this size
         self.write_offers: bool = False  # .ini in OFFERS (AKPhone only; AKPhoneS has none)
         self.telegram = TelegramConfig()
         self.comment = CommentConfig()
@@ -81,6 +86,7 @@ class AppConfig:
             prof.setdefault("fb_index", default_fb_idx)
             prof.setdefault("source_dir", self.source_dir)
             prof.setdefault("page_names", self.page_names)
+            prof.setdefault("page_links", "")
             prof.setdefault("enabled", True)
             return prof
 
@@ -89,6 +95,7 @@ class AppConfig:
             "fb_index": str(default_fb_idx),
             "source_dir": self.source_dir,
             "page_names": self.page_names,
+            "page_links": "",
             "enabled": True,
         }
         self.device_profiles[serial] = new_prof
@@ -107,6 +114,7 @@ class AppConfig:
                     "fb_index": str(idx),
                     "source_dir": self.source_dir,
                     "page_names": self.page_names,
+                    "page_links": "",
                     "enabled": True,
                 }
             else:
@@ -133,11 +141,15 @@ class AppConfig:
             self.page_names = data.get("page_names", self.page_names)
             self.target_device = data.get("target_device", self.target_device)
             self.watchdog_timeout = int(data.get("watchdog_timeout", self.watchdog_timeout))
+            self.max_page_fail_rounds = int(data.get("max_page_fail_rounds", self.max_page_fail_rounds))
             self.auto_screencap = bool(data.get("auto_screencap", self.auto_screencap))
             self.auto_clean_storage = bool(data.get("auto_clean_storage", self.auto_clean_storage))
             self.auto_clean_payloads = bool(
                 data.get("auto_clean_payloads", self.auto_clean_payloads)
             )
+            self.screenshot_keep_days = int(data.get("screenshot_keep_days", self.screenshot_keep_days))
+            self.archive_keep_days = int(data.get("archive_keep_days", self.archive_keep_days))
+            self.browser_cache_max_mb = int(data.get("browser_cache_max_mb", self.browser_cache_max_mb))
             self.payload_retention_days = int(
                 data.get("payload_retention_days", self.payload_retention_days)
             )
@@ -194,10 +206,14 @@ class AppConfig:
             "page_names": self.page_names,
             "target_device": self.target_device,
             "watchdog_timeout": self.watchdog_timeout,
+            "max_page_fail_rounds": self.max_page_fail_rounds,
             "auto_screencap": self.auto_screencap,
             "auto_clean_storage": self.auto_clean_storage,
             "auto_clean_payloads": self.auto_clean_payloads,
             "payload_retention_days": self.payload_retention_days,
+            "screenshot_keep_days": self.screenshot_keep_days,
+            "archive_keep_days": self.archive_keep_days,
+            "browser_cache_max_mb": self.browser_cache_max_mb,
             "write_offers": self.write_offers,
             "device_profiles": self.device_profiles,
             "telegram": {

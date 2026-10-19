@@ -8,6 +8,7 @@ import queue
 import re
 import subprocess
 import threading
+import time
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 from typing import Any, Callable, Dict, List, Optional
@@ -17,6 +18,7 @@ import customtkinter as ctk
 from akphone_dispatcher import __version__
 from akphone_dispatcher.core.comment_queue import CommentQueue
 from akphone_dispatcher.core.config import AppConfig
+from akphone_dispatcher.core.fb_profiles import FbProfileStore
 from akphone_dispatcher.core.models import (
     DeviceInfo,
     DeviceProfile,
@@ -25,19 +27,48 @@ from akphone_dispatcher.core.models import (
     TelegramConfig,
 )
 from akphone_dispatcher.core.payload import clean_completed_payloads, transfer_payload
-from akphone_dispatcher.core.scanner import parse_page_names_mapping, scan_source_directory
+from akphone_dispatcher.core.script_templates import (
+    check_cmt_template,
+    check_post_template,
+    render_post_script,
+)
+from akphone_dispatcher.core.scanner import (
+    check_store,
+    page_id_for,
+    page_name_for,
+    page_number,
+    parse_page_links_mapping,
+    parse_page_names_mapping,
+    scan_source_directory,
+)
 from akphone_dispatcher.gui.comment_tab import CommentTabMixin
 from akphone_dispatcher.gui.workers.feeder_worker import FarmFeederManager, queue_post_comment
 from akphone_dispatcher.services.adb_service import AdbService
 from akphone_dispatcher.services.comment_tracker import (
+    IDLE_CMT_SCRIPT,
     CommentTracker,
+    _write_atomic,
+    cmt_script_filename,
     comment_filename,
-    link_filename,
+    render_cmt_script,
 )
 from akphone_dispatcher.services.notifier import TelegramNotifier
-from akphone_dispatcher.services.session import SessionManager
+from akphone_dispatcher.services.session import SessionManager, restore_device_profiles
 from akphone_dispatcher.utils.helpers import resolve_akphone_layout
+from akphone_dispatcher.utils.housekeeping import (
+    CleanReport,
+    clean_browser_cache,
+    clean_stuck_payloads,
+    delete_older_than,
+)
 from akphone_dispatcher.utils.logger import logger
+
+HOUSEKEEPING_EVERY_MS = 6 * 3600 * 1000
+
+
+def template_reports(txt: str, cmt: str, flag_dir: str):
+    """(post template report, comment template report or None when there is none)."""
+    return check_post_template(txt), (check_cmt_template(cmt, flag_dir) if cmt.strip() else None)
 
 ctk.set_appearance_mode("Dark")
 ctk.set_default_color_theme("blue")
@@ -58,8 +89,16 @@ class AKPhoneApp(CommentTabMixin, ctk.CTk):
         self.notifier = TelegramNotifier(self.config.telegram)
         self.session_manager = SessionManager()
         self.comment_queue = CommentQueue(self.config.comment_queue_path)
+        self.fb_profiles = FbProfileStore(
+            self.config.fb_profiles_path, self.config.browser_profile_dir
+        )
         self.comment_tracker = CommentTracker(
-            self.config, self.adb, self.notifier, self.comment_queue
+            self.config,
+            self.adb,
+            self.notifier,
+            self.comment_queue,
+            is_feeding=lambda serial: self.feeder_manager.is_running(serial),
+            profile_store=self.fb_profiles,
         )
 
         # Multi-device state
@@ -67,6 +106,8 @@ class AKPhoneApp(CommentTabMixin, ctk.CTk):
         self.device_profiles: Dict[str, DeviceProfile] = {}
         self.selected_serial: Optional[str] = None
         self._is_updating_selection: bool = False
+
+        self._housekeeping_lock = threading.Lock()
 
         # Thread-safe UI dispatch queue
         self.ui_queue: queue.Queue = queue.Queue()
@@ -89,19 +130,108 @@ class AKPhoneApp(CommentTabMixin, ctk.CTk):
 
         # Connect logger to GUI
         logger.add_listener(self._on_log_received)
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
 
         # Initial ADB scan & session load
         self.after(500, self._refresh_devices_async)
         self.after(1200, self._check_existing_session)
         if self.config.comment.enabled:
-            self.after(3000, self.comment_tracker.start)
+            self.after(1500, self._startup_housekeeping)
+        else:
+            self.after(1500, lambda: self._startup_housekeeping(start_tracker=False))
+        self.after(HOUSEKEEPING_EVERY_MS, self._periodic_housekeeping)
+
+    # ---------- closing ----------
+    def _on_close(self):
+        """Window X: stop every thread, close the scan browsers, flush data, then quit."""
+        if getattr(self, "_closing", False):
+            return
+        busy = self.feeder_manager.is_running() or self.comment_tracker.is_alive()
+        if busy and not messagebox.askyesno(
+            "Đóng Tool",
+            "Tool đang chạy (đăng bài và/hoặc theo dõi comment).\n"
+            "Đóng sẽ dừng hết, đóng trình duyệt quét và lưu tiến độ. Đóng tool?",
+        ):
+            return
+        self._closing = True
+        try:
+            self.lbl_global_status.configure(
+                text="⏳ Đang dừng các luồng, đóng trình duyệt...", text_color="#f59e0b"
+            )
+        except Exception:
+            pass
+        threading.Thread(target=self._shutdown, name="Shutdown", daemon=True).start()
+
+    def _shutdown(self, timeout_s: float = 40):
+        deadline = time.time() + timeout_s
+        try:
+            self.feeder_manager.stop_all()
+            self.comment_tracker.stop()
+            for worker in list(self.feeder_manager.workers.values()):
+                if worker.thread is not None:
+                    worker.thread.join(max(0.1, min(10, deadline - time.time())))
+            self.comment_tracker.join(timeout=max(0.1, deadline - time.time()))
+            for serial, prof in self.device_profiles.items():
+                if prof.pages_data:  # never overwrite a saved session with an empty profile
+                    self.session_manager.save_device(serial, prof)
+            self.comment_queue.save()
+            while self.notifier.pending() and time.time() < deadline and self.notifier.flush_one():
+                pass
+            logger.info("👋 Đã dừng mọi luồng và lưu dữ liệu; đóng tool.")
+        except Exception as e:
+            logger.error(f"Lỗi khi đóng tool: {e}")
+        finally:
+            self.dispatch_ui(self.destroy)
+
+    # ---------- disk housekeeping ----------
+    def housekeeping(self, include_browser: bool) -> CleanReport:
+        """Delete what only takes disk space; browser caches only while no scan browser is open."""
+        report = CleanReport()
+        with self._housekeeping_lock:
+            cfg = self.config
+            delete_older_than(cfg.base_dir / "logs" / "screenshots", cfg.screenshot_keep_days, report)
+            delete_older_than(
+                cfg.comment_queue_path.parent / "comment_archive", cfg.archive_keep_days, report, "*.jsonl"
+            )
+            if cfg.running_dir and os.path.isdir(cfg.running_dir):
+                keep = self.comment_queue.protected_archives()
+                clean_stuck_payloads(cfg.running_dir, report, keep=keep)
+            if include_browser and not self.comment_tracker.is_alive():
+                for profile in self.fb_profiles.list():
+                    clean_browser_cache(
+                        self.fb_profiles.dir_of(profile), report, min_total_mb=cfg.browser_cache_max_mb
+                    )
+        if report.removed:
+            logger.info(f"🧹 Dọn dẹp ổ đĩa: đã xóa {report.summary()}.")
+        return report
+
+    def _startup_housekeeping(self, start_tracker: bool = True):
+        def work():
+            try:
+                self.housekeeping(include_browser=True)
+            except Exception as e:
+                logger.error(f"Lỗi dọn dẹp ổ đĩa: {e}")
+            if start_tracker:
+                self.dispatch_ui(lambda: self.start_tracker_checked(interactive=False))
+
+        threading.Thread(target=work, name="Housekeeping", daemon=True).start()
+
+    def _periodic_housekeeping(self):
+        def work():
+            try:
+                self.housekeeping(include_browser=False)
+            except Exception as e:
+                logger.error(f"Lỗi dọn dẹp ổ đĩa: {e}")
+
+        threading.Thread(target=work, name="Housekeeping", daemon=True).start()
+        self.after(HOUSEKEEPING_EVERY_MS, self._periodic_housekeeping)
 
     def _start_queue_poller(self):
         self._process_ui_queue()
 
     def _process_ui_queue(self):
         try:
-            while True:
+            while not getattr(self, "_destroyed", False):
                 callback = self.ui_queue.get_nowait()
                 try:
                     callback()
@@ -110,7 +240,13 @@ class AKPhoneApp(CommentTabMixin, ctk.CTk):
         except queue.Empty:
             pass
         finally:
-            self.after(40, self._process_ui_queue)
+            if not getattr(self, "_destroyed", False):
+                self.after(40, self._process_ui_queue)
+
+    def destroy(self):
+        self._destroyed = True
+        logger.remove_listener(self._on_log_received)
+        super().destroy()
 
     def dispatch_ui(self, callback: Callable[[], None]):
         """Safely dispatch a callback to be run on the main Tkinter thread."""
@@ -324,6 +460,14 @@ class AKPhoneApp(CommentTabMixin, ctk.CTk):
         ).pack(side="left")
         ctk.CTkButton(
             p_top,
+            text="💾 Lưu Tên + Link",
+            width=120,
+            height=22,
+            fg_color="#059669",
+            command=self._save_page_links_selected,
+        ).pack(side="right", padx=(6, 0))
+        ctk.CTkButton(
+            p_top,
             text="Quét Kho & Điền Mẫu",
             width=130,
             height=22,
@@ -331,11 +475,27 @@ class AKPhoneApp(CommentTabMixin, ctk.CTk):
             command=self._scan_and_fill_profile_pages,
         ).pack(side="right")
 
-        self.text_profile_pages = ctk.CTkTextbox(
-            self.right_box, height=85, font=ctk.CTkFont(family="Consolas", size=11)
+        p_cols = ctk.CTkFrame(self.right_box, fg_color="transparent")
+        p_cols.pack(fill="both", expand=True, padx=12, pady=3)
+        p_cols.grid_columnconfigure(0, weight=2)
+        p_cols.grid_columnconfigure(1, weight=3)
+        p_cols.grid_rowconfigure(1, weight=1)
+        ctk.CTkLabel(p_cols, text="Tên Fanpage (mỗi dòng 1 page)", anchor="w").grid(
+            row=0, column=0, sticky="w"
         )
-        self.text_profile_pages.pack(fill="both", expand=True, padx=12, pady=3)
+        ctk.CTkLabel(p_cols, text="Link Fanpage (cùng dòng với tên)", anchor="w").grid(
+            row=0, column=1, sticky="w", padx=(6, 0)
+        )
+        self.text_profile_pages = ctk.CTkTextbox(
+            p_cols, height=85, wrap="none", font=ctk.CTkFont(family="Consolas", size=11)
+        )
+        self.text_profile_pages.grid(row=1, column=0, sticky="nsew")
         self.text_profile_pages.bind("<KeyRelease>", lambda e: self._on_detail_field_changed())
+        self.text_profile_links = ctk.CTkTextbox(
+            p_cols, height=85, wrap="none", font=ctk.CTkFont(family="Consolas", size=11)
+        )
+        self.text_profile_links.grid(row=1, column=1, sticky="nsew", padx=(6, 0))
+        self.text_profile_links.bind("<KeyRelease>", lambda e: self._on_detail_field_changed())
 
         # Device action buttons
         d_actions = ctk.CTkFrame(self.right_box, fg_color="transparent")
@@ -493,6 +653,15 @@ class AKPhoneApp(CommentTabMixin, ctk.CTk):
             command=self._load_templates_to_ui,
         ).pack(side="left", padx=(0, 10))
 
+        ctk.CTkButton(
+            r,
+            text="🔄 Áp Dụng Mẫu Cho Script Đang Dùng",
+            width=250,
+            fg_color="#059669",
+            hover_color="#047857",
+            command=self._apply_templates_clicked,
+        ).pack(side="left", padx=(0, 10))
+
     def _build_tab_settings(self):
         tab = self.tab_settings
 
@@ -617,7 +786,7 @@ class AKPhoneApp(CommentTabMixin, ctk.CTk):
 
         ctk.CTkButton(
             r_ret2,
-            text="🧹 Dọn Dẹp Payload Store Ngay",
+            text="🧹 Dọn Dẹp Ổ Đĩa Ngay",
             width=210,
             fg_color="#d97706",
             hover_color="#b45309",
@@ -739,10 +908,12 @@ class AKPhoneApp(CommentTabMixin, ctk.CTk):
                     source_dir=saved_cfg.get("source_dir", self.config.source_dir),
                     running_dir=self.config.running_dir,
                     page_names=saved_cfg.get("page_names", self.config.page_names),
+                    page_links=saved_cfg.get("page_links", ""),
                     enabled=saved_cfg.get("enabled", True),
                     device_info=d,
                 )
-                self.device_profiles[d.serial] = prof
+                # setdefault: a session restored meanwhile keeps its profile
+                self.device_profiles.setdefault(d.serial, prof).device_info = d
             else:
                 self.device_profiles[d.serial].device_info = d
 
@@ -818,6 +989,8 @@ class AKPhoneApp(CommentTabMixin, ctk.CTk):
 
             self.text_profile_pages.delete("1.0", "end")
             self.text_profile_pages.insert("1.0", prof.page_names)
+            self.text_profile_links.delete("1.0", "end")
+            self.text_profile_links.insert("1.0", prof.page_links)
         finally:
             self._is_updating_selection = False
 
@@ -839,6 +1012,8 @@ class AKPhoneApp(CommentTabMixin, ctk.CTk):
         prof.fb_index = self.entry_profile_m.get().strip() or "1"
         prof.source_dir = self.entry_profile_src.get().strip()
         prof.page_names = self.text_profile_pages.get("1.0", "end-1c").strip()
+        # keep empty lines: a link belongs to the name on the same line number
+        prof.page_links = self.text_profile_links.get("1.0", "end-1c").rstrip()
 
         # Update config profile
         self.config.set_profile(
@@ -847,6 +1022,7 @@ class AKPhoneApp(CommentTabMixin, ctk.CTk):
                 "fb_index": prof.fb_index,
                 "source_dir": prof.source_dir,
                 "page_names": prof.page_names,
+                "page_links": prof.page_links,
                 "enabled": prof.enabled,
             },
         )
@@ -864,6 +1040,59 @@ class AKPhoneApp(CommentTabMixin, ctk.CTk):
             )
         except Exception:
             pass
+
+    def _page_identity(self, prof, page: PageInfo):
+        """(Fanpage name, Fanpage link) currently written for a page in the device profile."""
+        names = parse_page_names_mapping(prof.page_names or self.config.page_names)
+        links = parse_page_links_mapping(prof.page_names or self.config.page_names, prof.page_links)
+        m_num = re.search(r"\d+", page.folder_name)
+        n_num = m_num.group(0) if m_num else page.folder_name
+        name = names.get(page.folder_name) or names.get(f"page-{n_num}") or ""
+        link = links.get(page.folder_name) or links.get(f"page-{n_num}") or ""
+        return name, link
+
+    def _apply_page_links(self, serial: str) -> List[str]:
+        """Push the profile's Fanpage links to its pages and to their running comment jobs.
+
+        Same name as now -> same page: the link is filled in / corrected, also for posts
+        already queued. New name -> new page: it takes effect after 'Khởi Tạo' (new
+        scripts), and the old posts keep tracking the old page with the old link.
+        """
+        prof = self.device_profiles.get(serial)
+        report: List[str] = []
+        if not prof:
+            return report
+        for pid, page in sorted(prof.pages_data.items()):
+            name, link = self._page_identity(prof, page)
+            if name and name != page.fanpage_name:
+                report.append(
+                    f"• {pid}: đổi page '{page.fanpage_name}' → '{name}' — bấm 'Khởi Tạo' để áp dụng; "
+                    "bài cũ vẫn theo dõi page cũ."
+                )
+                continue
+            page.page_url = link
+            changed = self.comment_queue.set_page_url(serial, pid, page.fanpage_name, link)
+            state = link or "⚠ CHƯA CÓ LINK"
+            extra = f" (cập nhật {changed} bài đang theo dõi)" if changed else ""
+            report.append(f"• {pid} · {page.fanpage_name}: {state}{extra}")
+        return report
+
+    def _save_page_links_selected(self):
+        if not self.selected_serial:
+            messagebox.showwarning("Cảnh báo", "Vui lòng chọn 1 thiết bị từ bảng bên trái!")
+            return
+        self._on_detail_field_changed()
+        report = self._apply_page_links(self.selected_serial)
+        self.session_manager.save_farm_session(self.device_profiles)
+        if not report:
+            messagebox.showinfo(
+                "Đã Lưu",
+                "Đã lưu tên + link Fanpage. Máy này chưa khởi tạo page nào: link sẽ được dùng khi "
+                "bấm 'Khởi Tạo'.",
+            )
+            return
+        logger.info(f"🔗 Đã lưu link Fanpage cho máy {self.selected_serial}:\n" + "\n".join(report))
+        messagebox.showinfo("Đã Lưu Tên + Link Fanpage", "\n".join(report))
 
     def _browse_profile_source_dir(self):
         d = filedialog.askdirectory(initialdir=self.entry_profile_src.get())
@@ -903,6 +1132,7 @@ class AKPhoneApp(CommentTabMixin, ctk.CTk):
                     "fb_index": prof.fb_index,
                     "source_dir": prof.source_dir,
                     "page_names": prof.page_names,
+                    "page_links": prof.page_links,
                     "enabled": prof.enabled,
                 },
             )
@@ -981,50 +1211,84 @@ class AKPhoneApp(CommentTabMixin, ctk.CTk):
             logger.error(f"Không tìm thấy video nào trong kho {src_dir} của máy {serial}")
             return False
 
+        # Checked before anything is written or cut out of the store
+        report = check_store(src_dir, prof.page_names or self.config.page_names, prof.fb_index)
+        for warning in report.warnings:
+            logger.warning(f"[MÁY {serial} | {prof.via_tag}] Kho bài: {warning}")
+        if report.errors:
+            for error in report.errors:
+                logger.error(f"[MÁY {serial} | {prof.via_tag}] Kho bài: {error}")
+            shown = report.errors[:12]
+            messagebox.showerror(
+                "Kho Bài Chưa Đúng - Chưa Khởi Tạo",
+                f"Máy {serial} ({prof.via_tag}) chưa được khởi tạo, chưa có file nào bị chuyển.\n"
+                f"Kho: {src_dir}\n\n"
+                + "\n".join(f"• {e}" for e in shown)
+                + (f"\n... và {len(report.errors) - len(shown)} lỗi khác (xem nhật ký)"
+                   if len(report.errors) > len(shown) else "")
+                + "\n\nSửa kho / tên page rồi bấm Khởi Tạo lại."
+                "\nVideo ghép với caption và comment theo SỐ trong tên file "
+                "(vd10...mp4 ↔ cap10...txt ↔ cmt10...txt).",
+            )
+            return False
+
         page_names_map = parse_page_names_mapping(prof.page_names or self.config.page_names)
+        page_links_map = parse_page_links_mapping(
+            prof.page_names or self.config.page_names, prof.page_links
+        )
         txt_tpl = self.config.template_txt_path.read_text(encoding="utf-8")
         ini_tpl = self.config.template_ini_path.read_text(encoding="utf-8") if write_offers else ""
         cmt_path = self.config.template_cmt_path
         cmt_tpl = cmt_path.read_text(encoding="utf-8") if cmt_path.is_file() else ""
+        post_report, cmt_report = template_reports(txt_tpl, cmt_tpl, self.config.comment.flag_dir)
+        template_errors = post_report.errors + (cmt_report.errors if cmt_report else [])
+        if template_errors:
+            for error in template_errors:
+                logger.error(f"[MÁY {serial}] Mẫu script: {error}")
+            messagebox.showerror(
+                "Mẫu Script Có Lỗi - Chưa Khởi Tạo",
+                "Chưa có file nào bị chuyển.\n\n" + "\n".join(f"• {e}" for e in template_errors)
+                + "\n\nSửa ở Tab 3 rồi Khởi Tạo lại.",
+            )
+            return False
+        for warning in post_report.warnings + (cmt_report.warnings if cmt_report else []):
+            logger.warning(f"[MÁY {serial}] Mẫu script: {warning}")
 
         prof.pages_data = {}
         m_val = prof.fb_index or "1"
 
         try:
             for folder_name, posts in scanned.items():
-                m_num = re.search(r"\d+", folder_name)
-                n_num = m_num.group(0) if m_num else folder_name
-                page_id = f"page{n_num}fb{m_val}"
-                fanpage_name = (
-                    page_names_map.get(folder_name)
-                    or page_names_map.get(f"page-{n_num}")
-                    or f"Fanpage {folder_name}"
-                )
+                n_num = page_number(folder_name)
+                page_id = page_id_for(folder_name, m_val)
+                fanpage_name = page_name_for(folder_name, page_names_map)
+                page_url = page_links_map.get(folder_name) or page_links_map.get(f"page-{n_num}") or ""
+                if not page_url:
+                    logger.warning(
+                        f"[{page_id}] {fanpage_name} chưa có link Fanpage: bài vẫn đăng, nhưng chưa "
+                        "theo dõi view/comment được cho tới khi điền link."
+                    )
 
                 page_video_dir = Path(running_base) / page_id
                 page_video_dir.mkdir(parents=True, exist_ok=True)
 
                 page_caption_filename = f"Caption_{page_id}.txt"
-                page_comment_filename = comment_filename(page_id)
                 ak_caption_path = str(scripts_files_dest / page_caption_filename)
 
-                final_txt = (
-                    txt_tpl.replace("{ID}", page_id)
-                    .replace("{PAGE_NAME}", fanpage_name)
-                    .replace("{VIDEO_DIR}", str(page_video_dir))
-                    .replace("{CAPTION_PATH}", page_caption_filename)
-                    .replace("{COMMENT_PATH}", page_comment_filename)
-                )
+                final_txt = render_post_script(txt_tpl, page_id, fanpage_name, str(page_video_dir))
                 (scripts_dest / f"{page_id}.txt").write_text(final_txt, encoding="utf-8")
 
                 if cmt_tpl:
+                    # The real comment script is written only when a post reaches the
+                    # threshold; until then cmt{ID}.txt does nothing (no double comment).
                     final_cmt = (
-                        cmt_tpl.replace("{ID}", page_id)
-                        .replace("{PAGE_NAME}", fanpage_name)
-                        .replace("{LINK_PATH}", link_filename(page_id))
-                        .replace("{COMMENT_PATH}", page_comment_filename)
+                        render_cmt_script(cmt_tpl, page_id, fanpage_name, self.config.comment.flag_dir)
+                        if self.comment_queue.has_marked(serial, page_id)
+                        else IDLE_CMT_SCRIPT
                     )
-                    (scripts_dest / f"cmt{page_id}.txt").write_text(final_cmt, encoding="utf-8")
+                    (scripts_dest / cmt_script_filename(page_id)).write_text(
+                        final_cmt, encoding="utf-8"
+                    )
 
                 if write_offers:
                     final_ini = (
@@ -1044,6 +1308,7 @@ class AKPhoneApp(CommentTabMixin, ctk.CTk):
                     video_dir=str(page_video_dir),
                     caption_destinations=[ak_caption_path],
                     last_status="Ready",
+                    page_url=page_url,
                 )
                 prof.pages_data[page_id] = page_obj
 
@@ -1099,6 +1364,13 @@ class AKPhoneApp(CommentTabMixin, ctk.CTk):
         if not self.selected_serial:
             messagebox.showwarning("Cảnh báo", "Vui lòng chọn 1 thiết bị từ bảng bên trái!")
             return
+        if self.feeder_manager.is_running(self.selected_serial):
+            messagebox.showwarning(
+                "Máy Đang Chạy Auto",
+                f"Máy [{self.selected_serial}] đang chạy auto. Bấm 'Dừng' (hoặc đợi chạy xong) rồi mới "
+                "Khởi Tạo lại, để không làm rối vòng đang chạy.",
+            )
+            return
         self._warn_if_offers_missing(self.config.akphone_dir)
         if self._init_scripts_for_device(self.selected_serial):
             prof = self.device_profiles[self.selected_serial]
@@ -1125,8 +1397,15 @@ class AKPhoneApp(CommentTabMixin, ctk.CTk):
             return
         self._warn_if_offers_missing(self.config.akphone_dir)
         success_count = 0
+        busy = [s for s, p in self.device_profiles.items() if p.enabled and self.feeder_manager.is_running(s)]
+        if busy:
+            messagebox.showwarning(
+                "Máy Đang Chạy Auto",
+                f"Bỏ qua {len(busy)} máy đang chạy auto: {', '.join(busy)}.\n"
+                "Dừng (hoặc đợi chạy xong) rồi Khởi Tạo lại các máy này.",
+            )
         for serial, prof in self.device_profiles.items():
-            if prof.enabled:
+            if prof.enabled and serial not in busy:
                 if self._init_scripts_for_device(serial):
                     success_count += 1
                     try:
@@ -1192,9 +1471,8 @@ class AKPhoneApp(CommentTabMixin, ctk.CTk):
         if not prof or not prof.pages_data:
             messagebox.showwarning("Cảnh báo", "Máy này chưa được khởi tạo kịch bản!")
             return
-        active_pages = [
-            pid for pid, inf in prof.pages_data.items() if inf.current_idx <= inf.total_posts
-        ]
+        # pages whose post is already live are left out: flagging them would post it twice
+        active_pages = [pid for pid, inf in prof.pages_data.items() if inf.ready_to_post]
         if self.adb.init_round_flags(self.selected_serial, active_pages):
             messagebox.showinfo(
                 "Thành Công", f"Đã nạp lại {len(active_pages)} cờ Done lên máy {self.selected_serial}!"
@@ -1204,6 +1482,7 @@ class AKPhoneApp(CommentTabMixin, ctk.CTk):
 
     def _start_all_devices(self):
         started = self.feeder_manager.start_all(self.device_profiles)
+        self._update_progress_display()
         if started == 0:
             messagebox.showwarning(
                 "Chưa Khởi Tạo",
@@ -1246,6 +1525,14 @@ class AKPhoneApp(CommentTabMixin, ctk.CTk):
 
     def _update_progress_display(self):
         def update():
+            running = sum(1 for w in self.feeder_manager.workers.values() if w.is_running())
+            if running:
+                self.btn_start_all.configure(
+                    text=f"🟢 ĐANG CHẠY {running} MÁY", fg_color="#047857"
+                )
+            else:
+                self.btn_start_all.configure(text="▶️ BẬT TẤT CẢ (START ALL)", fg_color="#10b981")
+
             # Update Tab 1 device treeview statuses
             for serial, prof in self.device_profiles.items():
                 try:
@@ -1339,11 +1626,23 @@ class AKPhoneApp(CommentTabMixin, ctk.CTk):
         if not r_dir:
             messagebox.showwarning("Cảnh Báo", "Chưa cấu hình Thư mục đệm (Running Dir)!")
             return
-        cleaned = clean_completed_payloads(r_dir, max_age_days=0)
-        messagebox.showinfo(
-            "Đã Dọn Dẹp",
-            f"Đã dọn dẹp {cleaned} bản lưu trữ payload đã hoàn tất khỏi .payload-store!",
+        cleaned = clean_completed_payloads(
+            r_dir, max_age_days=0, keep=self.comment_queue.protected_archives()
         )
+
+        def work():
+            report = self.housekeeping(include_browser=True)
+            browser_note = (
+                "" if not self.comment_tracker.is_alive()
+                else "\n(Cache trình duyệt chưa dọn vì đang theo dõi comment: tắt theo dõi rồi bấm lại.)"
+            )
+            self.dispatch_ui(lambda: messagebox.showinfo(
+                "Đã Dọn Dẹp",
+                f"Đã dọn {cleaned} bản lưu payload đã hoàn tất, và {report.summary()} "
+                f"(ảnh lỗi cũ, lịch sử cũ, bản lưu kẹt, cache trình duyệt).{browser_note}",
+            ))
+
+        threading.Thread(target=work, name="Housekeeping", daemon=True).start()
 
     def _browse_akphone_dir(self):
         cur = self.entry_akphone_dir.get().strip() or self.config.akphone_dir
@@ -1382,17 +1681,117 @@ class AKPhoneApp(CommentTabMixin, ctk.CTk):
         self.tpl_ini_edit.delete("1.0", "end")
         self.tpl_ini_edit.insert("1.0", ini_content)
 
+    def _template_reports(self, txt: str, cmt: str):
+        return template_reports(txt, cmt, self.config.comment.flag_dir)
+
+    @staticmethod
+    def _report_text(post, cmt) -> str:
+        parts = []
+        for label, report in (("Mẫu đăng bài", post), ("Mẫu comment", cmt)):
+            if report is None:
+                continue
+            parts += [f"❌ {label}: {e}" for e in report.errors]
+            parts += [f"⚠ {label}: {w}" for w in report.warnings]
+        return "\n".join(parts)
+
     def _save_templates_from_ui(self):
         txt_content = self.tpl_txt_edit.get("1.0", "end-1c")
         ini_content = self.tpl_ini_edit.get("1.0", "end-1c")
         cmt_content = self.tpl_cmt_edit.get("1.0", "end-1c")
+        post, cmt = self._template_reports(txt_content, cmt_content)
+        has_errors = bool(post.errors or (cmt and cmt.errors))
+        if has_errors and not messagebox.askyesno(
+            "Mẫu Có Lỗi",
+            self._report_text(post, cmt)
+            + "\n\nMẫu có lỗi sẽ làm sai luồng của tool. Khởi Tạo / Áp Dụng sẽ bị chặn tới khi sửa."
+            "\nVẫn lưu bản nháp này?",
+        ):
+            return
         try:
             self.config.template_txt_path.write_text(txt_content, encoding="utf-8")
             self.config.template_ini_path.write_text(ini_content, encoding="utf-8")
             self.config.template_cmt_path.write_text(cmt_content, encoding="utf-8")
-            messagebox.showinfo("Đã Lưu Mẫu", "Đã lưu kịch bản mẫu ra file thành công!")
         except Exception as e:
             messagebox.showerror("Lỗi", f"Không thể lưu file mẫu: {e}")
+            return
+        if has_errors:
+            return
+        warnings = self._report_text(post, cmt)
+        initialized = any(p.pages_data for p in self.device_profiles.values())
+        text = "Đã lưu mẫu." + (f"\n\nLưu ý:\n{warnings}" if warnings else "")
+        if not initialized:
+            messagebox.showinfo("Đã Lưu Mẫu", text + "\n\nMẫu sẽ dùng cho lần Khởi Tạo tới.")
+            return
+        if messagebox.askyesno(
+            "Đã Lưu Mẫu",
+            text + "\n\nÁp dụng mẫu mới cho script của các máy đã khởi tạo ngay bây giờ?"
+            "\n(Chỉ viết lại file script; không đụng tới bài, kho, tiến độ.)",
+        ):
+            self._apply_templates_clicked(confirm=False)
+
+    def apply_templates(self):
+        """Rewrite every initialized page's scripts from the current templates.
+
+        Only the script files change: running dir, store, progress and the comment queue
+        stay as they are. Returns (pages rewritten, errors); refuses a broken template.
+        """
+        txt = self.config.template_txt_path.read_text(encoding="utf-8")
+        cmt_path = self.config.template_cmt_path
+        cmt = cmt_path.read_text(encoding="utf-8") if cmt_path.is_file() else ""
+        post_report, cmt_report = self._template_reports(txt, cmt)
+        errors = post_report.errors + (cmt_report.errors if cmt_report else [])
+        if errors:
+            return 0, errors
+        scripts_dest, offers_dest = resolve_akphone_layout(self.config.akphone_dir)
+        write_offers = self.config.write_offers and offers_dest is not None
+        ini_tpl = self.config.template_ini_path.read_text(encoding="utf-8") if write_offers else ""
+        flag_dir = self.config.comment.flag_dir
+        count = 0
+        for serial, prof in self.device_profiles.items():
+            for pid, info in prof.pages_data.items():
+                _write_atomic(
+                    scripts_dest / f"{pid}.txt",
+                    render_post_script(txt, pid, info.fanpage_name, info.video_dir),
+                )
+                if cmt:
+                    _write_atomic(
+                        scripts_dest / cmt_script_filename(pid),
+                        render_cmt_script(cmt, pid, info.fanpage_name, flag_dir)
+                        if self.comment_queue.has_marked(serial, pid)
+                        else IDLE_CMT_SCRIPT,
+                    )
+                if write_offers:
+                    _write_atomic(
+                        offers_dest / f"{pid}.ini",
+                        ini_tpl.replace("{ID}", pid)
+                        .replace("{PAGE_NAME}", info.fanpage_name)
+                        .replace("{VIDEO_DIR}", str(info.video_dir)),
+                    )
+                count += 1
+        logger.info(f"🔄 Đã áp dụng mẫu mới cho {count} script page (không đụng tới bài/kho/tiến độ).")
+        return count, []
+
+    def _apply_templates_clicked(self, confirm: bool = True):
+        if not any(p.pages_data for p in self.device_profiles.values()):
+            messagebox.showinfo("Áp Dụng Mẫu", "Chưa có máy nào được Khởi Tạo: mẫu sẽ dùng cho lần Khởi Tạo tới.")
+            return
+        if confirm and not messagebox.askyesno(
+            "Áp Dụng Mẫu",
+            "Viết lại script đăng bài + script comment của mọi page đã khởi tạo theo mẫu hiện tại?\n"
+            "Không đụng tới bài, kho, tiến độ. Nên làm lúc AKPhoneS không chạy script.",
+        ):
+            return
+        try:
+            count, errors = self.apply_templates()
+        except Exception as e:
+            messagebox.showerror("Lỗi", f"Không áp dụng được mẫu: {e}")
+            return
+        if errors:
+            messagebox.showerror(
+                "Mẫu Có Lỗi - Chưa Áp Dụng", "\n".join(f"❌ {e}" for e in errors)
+            )
+            return
+        messagebox.showinfo("Đã Áp Dụng Mẫu", f"Đã viết lại script cho {count} page.")
 
     def _save_system_settings(self):
         try:
@@ -1430,12 +1829,20 @@ class AKPhoneApp(CommentTabMixin, ctk.CTk):
             return
         cfg = TelegramConfig(bot_token=token, chat_id=chat_id, enabled=True)
         test_notifier = TelegramNotifier(cfg)
-        test_notifier.send_message(
+        text = (
             f"🔔 <b>[AKPhone Farm Test Alert]</b>\n"
             f"Thời gian: <code>{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</code>\n"
             f"Đã cấu hình Telegram thành công!"
         )
-        messagebox.showinfo("Đã Gửi", "Đã gửi thử nghiệm đến Telegram!")
+
+        def work():  # sent right away so the result is known (no queue for a test)
+            try:
+                test_notifier._post_text(text)
+                self.dispatch_ui(lambda: messagebox.showinfo("Đã Gửi", "Telegram đã nhận tin thử nghiệm!"))
+            except Exception as e:
+                self.dispatch_ui(lambda: messagebox.showerror("Gửi Thất Bại", f"Không gửi được Telegram:\n{e}"))
+
+        threading.Thread(target=work, name="TelegramTest", daemon=True).start()
 
     def _check_existing_session(self):
         session = self.session_manager.load_session()
@@ -1445,41 +1852,12 @@ class AKPhoneApp(CommentTabMixin, ctk.CTk):
                 "Khôi Phục Tiến Độ",
                 f"Phát hiện phiên làm việc cũ gồm {len(devs)} máy.\nBạn có muốn khôi phục lại không?",
             ):
-                scripts_files_dest = resolve_akphone_layout(self.config.akphone_dir)[0] / "FILES"
-                for serial, s_data in devs.items():
-                    if serial in self.device_profiles:
-                        prof = self.device_profiles[serial]
-                        prof.fb_index = s_data.get("fb_index", prof.fb_index)
-                        prof.source_dir = s_data.get("source_dir", prof.source_dir)
-                        prof.page_names = s_data.get("page_names", prof.page_names)
-                        prof.status = s_data.get("status", "Khôi phục")
-
-                        # Re-scan actual source directory to restore live PostItems
-                        scanned_posts = {}
-                        if prof.source_dir and os.path.isdir(prof.source_dir):
-                            scanned_posts = scan_source_directory(
-                                prof.source_dir, self.config.running_dir
-                            )
-
-                        # Restore pages
-                        for pid, pdata in s_data.get("pages", {}).items():
-                            folder = pdata.get("folder_name", "")
-                            real_posts = scanned_posts.get(folder, [])
-                            page_video_dir = pdata.get(
-                                "video_dir", str(Path(self.config.running_dir) / pid)
-                            )
-                            ak_caption = str(scripts_files_dest / f"Caption_{pid}.txt")
-
-                            prof.pages_data[pid] = PageInfo(
-                                page_id=pid,
-                                folder_name=folder,
-                                fanpage_name=pdata["fanpage_name"],
-                                total_posts=pdata["total_posts"],
-                                current_idx=pdata["current_idx"],
-                                video_dir=page_video_dir,
-                                caption_destinations=[ak_caption],
-                                last_status=pdata.get("last_status", "Khôi phục"),
-                                posts=real_posts,
-                            )
+                caption_dir = resolve_akphone_layout(self.config.akphone_dir)[0] / "FILES"
+                restored = restore_device_profiles(
+                    session, self.device_profiles, self.config.running_dir, caption_dir
+                )
                 self._update_progress_display()
-                logger.info(f"Đã khôi phục thành công dữ liệu dàn {len(devs)} máy!")
+                logger.info(
+                    f"Đã khôi phục tiến độ {restored} máy (vị trí bài, bài đã đăng, lỗi nạp bài). "
+                    "Bấm Chạy để tiếp tục."
+                )

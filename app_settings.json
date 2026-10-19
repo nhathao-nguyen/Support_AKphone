@@ -18,7 +18,8 @@
             "fb_index": "1",
             "source_dir": "D:/test/via-1",
             "page_names": "Reel of Life\nUnspoken Scenes\nThe Turning Point",
-            "enabled": true
+            "enabled": true,
+            "page_links": ""
         },
         "294665ed0904": {
             "fb_index": "2",
@@ -38,12 +39,17 @@
     "comment": {
         "enabled": false,
         "view_threshold": 5000,
+        "views_interval_min": 60,
         "expire_hours": 168,
         "cmt_timeout_s": 3600,
+        "link_delay_s": 60,
+        "link_retry_s": 240,
+        "link_fast_attempts": 6,
+        "scan_gap_min_s": 2.0,
+        "scan_gap_max_s": 5.0,
+        "archive_after_hours": 24,
         "flag_dir": "/storage/emulated/0/Android/CMT",
         "headless": true,
-        "browser_channel": "msedge",
-        "page_urls": "",
-        "views_interval_min": 60
+        "browser_channel": "msedge"
     }
 }

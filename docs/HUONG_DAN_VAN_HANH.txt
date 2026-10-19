@@ -1,0 +1,287 @@
+﻿==============================================================
+            HƯỚNG DẪN VẬN HÀNH - AKPHONE DISPATCHER
+==============================================================
+
+A. TRƯỚC KHI MỞ TOOL
+--------------------------------------------------------------
+Dọn dẹp: TOOL TỰ LÀM (lúc mở tool và mỗi 6 giờ), không cần xóa tay:
+  - logs\app.log ............... tự chia file khi quá 10 MB, giữ 5 file
+  - logs\screenshots\ .......... ảnh lỗi cũ hơn 7 ngày
+  - configs\comment_archive\ ... lịch sử cũ hơn 30 ngày
+  - bản lưu bài bị kẹt (mất điện lúc chuyển file) cũ hơn 7 ngày
+  - cache trình duyệt quét khi vượt 300 MB (giữ nguyên đăng nhập)
+  Muốn dọn ngay: Tab 4 > "Dọn Dẹp Ổ Đĩa Ngay".
+
+KHÔNG ĐƯỢC XÓA:
+  - configs\session_state.json   (tiến độ đăng bài)
+  - configs\comment_queue.json   (danh sách bài chờ comment)
+  - configs\browser_profile\, configs\fb_profiles\, configs\fb_profiles.json
+                                 (các profile + phiên đăng nhập Facebook)
+  - configs\app_settings.json    (cài đặt)
+  - .payload-store trong thư mục đệm (dọn bằng nút ở Tab 4, xem mục C)
+
+Cần sẵn:
+  - Điện thoại: cắm cáp, đã bật Gỡ lỗi USB và chọn "Luôn cho phép"
+    máy tính này, pin đầy hoặc đang sạc, Facebook đã đăng nhập.
+  - Kho bài của mỗi máy có các thư mục page-1, page-2...
+    Mỗi page có video\, caption\, comments\.
+    Video ghép với caption và comment theo SỐ BÀI trong tên file
+    (chữ phía trước không quan trọng):
+        vd10page1fb1.mp4 <-> cap10page1fb1.txt <-> cmt10page1fb1.txt
+        01.mp4 <-> 01.txt (hoặc 1.txt)
+    Thứ tự đăng = thứ tự số của video (1, 2, 3 ... 10).
+  - Danh sách tên Fanpage (Tab 1) phải có tên cho MỌI thư mục page.
+  - Có mạng Internet (để lấy link reel, đọc view, gửi Telegram).
+  - Đã đóng mọi cửa sổ Edge mở bằng nút "Đăng nhập" của tool.
+
+
+B. MỞ TOOL
+--------------------------------------------------------------
+Chạy AKPhone_Dispatcher_Recovered.exe (hoặc Chay_Tool.bat).
+
+Tool hỏi "Khôi phục tiến độ?":
+  - CÓ    : chạy tiếp hôm trước, hoặc sau khi mất điện / tắt nhầm.
+            Sau đó BỎ QUA bước 5.
+  - KHÔNG : bắt đầu kho bài mới.
+
+LẦN ĐẦU CÀI (chỉ làm 1 lần):
+  1. Tab 4: chọn thư mục AKPhoneS (vd C:\AKPhoneS, thư mục có
+     assets\SCRIPTS; KHÔNG chọn C:\AKPhone nếu máy có cả hai),
+     adb.exe (bấm "Kiểm Tra ADB") và Thư mục đệm. Điền Telegram rồi bấm "Gửi Thử".
+     Cuối cùng bấm "LƯU CẤU HÌNH HỆ THỐNG".
+  2. Tab 5: bấm "Profile Facebook" để mở cửa sổ quản lý profile (mục F).
+     Mỗi profile: điền Tên, Loại proxy + Proxy (nếu có), bấm "Thêm mới",
+     bấm "Kiểm tra proxy", rồi chọn profile và bấm "Đăng nhập"
+     -> đăng nhập Facebook -> ĐÓNG cửa sổ trình duyệt.
+     Điền Ngưỡng view và "Timeout cờ CMT" (xem mục E),
+     tích "Tự bật theo dõi khi mở tool", rồi bấm "Lưu".
+
+MỖI LẦN CHẠY:
+  3. Tab 1: bấm "Quét ADB". Mọi máy phải hiện trong danh sách.
+  4. Lần đầu với máy mới: bấm "Tự Động Gán Nhanh fb1..fbN".
+     Sau đó chọn từng máy và kiểm tra Via + Kho bài.
+     Điền Tên Fanpage và Link Fanpage (mỗi dòng 1 page, tên và link
+     cùng dòng), rồi bấm "Lưu Tên + Link".
+  5. CHỈ KHI CÓ KHO BÀI MỚI: bấm "Khởi Tạo Scripts Cho TẤT CẢ Máy".
+     (!) Không bấm khi đang chạy dở, vì bài đang chờ đăng sẽ
+         thành "hết hạn".
+     Tool kiểm tra kho TRƯỚC khi làm gì. Gặp lỗi thì hiện bảng
+     "Kho Bài Chưa Đúng - Chưa Khởi Tạo" và KHÔNG chuyển file nào:
+       - video thiếu caption cùng số
+       - thư mục page chưa có tên Fanpage
+       - 2 thư mục ra cùng mã page (vd page-1 và page1)
+       - 2 file cùng số bài (vd 01.txt và 1.txt)
+     Sửa đúng chỗ ghi trong bảng rồi bấm Khởi Tạo lại.
+     Chỉ cảnh báo (vẫn khởi tạo, xem ô nhật ký): video không có
+     comment (bài đó không comment), file caption/comment thừa.
+  6. Trên AKPhoneS: bật vòng lặp của từng máy (cách cài ở mục E).
+  7. Bấm "BẬT TẤT CẢ" để bắt đầu đăng bài.
+
+LUỒNG COMMENT (Tab 5) CHẠY RIÊNG, ĐỘC LẬP VỚI NÚT "BẬT/DỪNG TẤT CẢ":
+  - Tự bật khi mở tool (nếu đã tích "Tự bật theo dõi khi mở tool"),
+    hoặc bấm nút "BẬT THEO DÕI". Nút đổi màu theo trạng thái:
+      ▶️ BẬT THEO DÕI (xám)          : đang tắt, bấm để bật
+      🟢 ĐANG THEO DÕI (xanh)         : đang chạy, bấm để tắt
+      🔒 TẠM DỪNG QUÉT (cam)          : mọi profile bị chặn, xem mục F
+      ⏳ Đang dừng...                 : chờ vài giây
+    Nút "BẬT TẤT CẢ" ở trên cùng cũng đổi thành "ĐANG CHẠY n MÁY"
+    khi có máy đang đăng bài.
+  - "DỪNG TẤT CẢ" chỉ dừng đăng bài; luồng comment vẫn chạy tiếp.
+  - Luồng comment chỉ nhận bài mới khi bài đó được đăng lúc
+    "BẬT TẤT CẢ" đang chạy.
+  - ĐỂ TOOL MỞ LIÊN TỤC: tool chỉ lấy link, đọc view và đẩy comment
+    khi đang mở (mỗi bài được theo dõi tối đa 7 ngày).
+
+
+C. QUAN SÁT KẾT QUẢ
+--------------------------------------------------------------
+TAB 1 - cột Trạng Thái của mỗi máy:
+  Đang chạy ................ bình thường
+  Mất kết nối USB .......... kiểm tra cáp; cắm lại là tool tự chạy tiếp
+  Chờ sửa lỗi nạp bài ...... kho thiếu hoặc hỏng file của bài kế tiếp
+                             (xem "Lỗi nạp bài" ở dưới)
+  Page tạm ngưng ........... có page lỗi 3 vòng liên tiếp (xem Tab 2)
+  Hoàn tất toàn bộ ......... máy đã đăng hết kho
+
+TAB 2 - từng page (cột Tiến Độ dạng 3/10 và cột Trạng Thái):
+  Đã nạp Bài N / Hoàn tất Bài N ... bình thường
+  Bị bỏ qua/Lỗi, Timeout treo máy . tool tự chạy lại ở vòng sau;
+                                    ảnh lỗi nằm ở logs\screenshots
+  ⛔ Tạm ngưng: lỗi 3 vòng liên tiếp  tool ngừng chạy lại page này (báo
+                                    Telegram). Sửa nguyên nhân rồi bấm
+                                    "Dừng" và "Chạy" lại máy đó.
+  (Watchdog: quá 360 giây không cờ nào mất -> page đang chạy bị tính
+   lỗi, Facebook được khởi động lại; nếu tiếp 360 giây nữa vẫn không
+   page nào chạy -> cả vòng tính lỗi.)
+  Lỗi nạp bài N ................... bổ sung hoặc sửa file bài N trong
+                                    kho; tool tự thử lại mỗi 60 giây,
+                                    không đăng trùng
+
+TAB 5 - Máy > Page > Bài:
+  Đã đăng, chờ thấy link ............... chờ (cột ghi chú: "Đã thấy reel mới,
+                                         đang xác minh" = đang đối chiếu)
+  Đang theo dõi view + "✓ Đã xác minh" .. link đã được xác minh bằng caption
+                                         + giờ đăng, chắc chắn đúng bài
+  Ghi chú "Có reel cùng caption nhưng
+  ... ngoài khoảng cho phép" hoặc
+  "Có reel đăng đúng giờ nhưng caption
+  khác" ................................. tool KHÔNG tự gán. Nhấp đúp mở link
+        xem tận mắt; đúng video thì chọn bài, bấm "Nhận reel gợi ý".
+  Ghi chú "Không tải được trang (mạng?)"  mất mạng: tool tự thử lại, KHÔNG
+                                         tính là lần thử (không bị "Nghi
+                                         đăng lỗi" oan)
+  Đang theo dõi view / Đã đẩy comment ... chờ
+  Đã comment ............................ xong
+  Nghi đăng lỗi ......................... mở Fanpage xem tận mắt.
+        CHỈ KHI CHẮC CHẮN CHƯA CÓ BÀI mới chọn bài rồi bấm
+        "Đăng lại bài lỗi"
+  Comment lỗi ........................... chọn bài, bấm "Comment lại"
+  Nút "TẠM DỪNG QUÉT" (màu cam) ........ mở "Profile Facebook", đăng
+        nhập lại / đổi proxy profile bị chặn, rồi bấm "Quét ngay"
+
+Ô NHẬT KÝ (dưới cùng) / TELEGRAM:
+  "Xong bài"        : page vừa đăng xong
+  "Đã bơm bài mới"  : đã nạp bài kế tiếp
+  "KẾT THÚC VÒNG"   : tổng kết số Thành công / Lỗi của vòng
+  "MẤT KẾT NỐI USB" : rút cáp hoặc điện thoại mất kết nối
+  dòng [ERROR]      : lỗi cần xem
+
+DỌN Ổ ĐĨA KHI ĐANG CHẠY:
+  Tab 4 > "Dọn Dẹp Payload Store Ngay"
+  (bài chưa có link vẫn được giữ lại).
+
+
+D. DỪNG TOOL
+--------------------------------------------------------------
+  - Bấm "DỪNG TẤT CẢ" (dừng đăng bài). Nếu cũng không cần comment nữa
+    thì đóng tool; còn bài đang chờ comment thì để tool mở.
+  - Đóng bằng nút X là an toàn: tool hỏi lại, dừng mọi luồng, đóng
+    trình duyệt quét, lưu dữ liệu rồi mới tắt (mất vài giây).
+  - Telegram mất mạng: tin được giữ lại và gửi khi có mạng, kèm ghi
+    chú "gửi trễ, sự việc lúc ...".
+  - Đồng hồ máy lệch giờ: tool tự đo và tự bù khi so giờ đăng; lệch
+    quá 2 phút thì báo để bật đồng bộ giờ Windows.
+  - Mất điện hoặc tắt nhầm: mở lại tool, chọn CÓ khôi phục,
+    rồi bấm "BẬT TẤT CẢ".
+==============================================================
+
+E. CÀI VÒNG LẶP TRÊN AKPHONES (mỗi điện thoại 1 danh sách)
+--------------------------------------------------------------
+Thứ tự file trong danh sách lặp của máy có Via fbM
+(M xem ở cột Via Tag, Tab 1):
+
+    page1fbM.txt
+    page2fbM.txt
+    ...                 <- mọi script đăng bài của máy
+    removedone.txt
+    cmtpage1fbM.txt
+    cmtpage2fbM.txt
+    ...                 <- mọi script comment của máy
+
+Ví dụ máy fb1 có 3 page:
+    page1fb1, page2fb1, page3fb1, removedone,
+    cmtpage1fb1, cmtpage2fb1, cmtpage3fb1   -> lặp lại từ đầu
+
+Đặt lặp VÔ HẠN và để chạy suốt, kể cả khi đã đăng hết bài:
+  - Script đăng bài chỉ đăng khi có cờ Done của tool; không có cờ
+    thì tự thoát, không đăng lại bài cũ.
+  - Script comment chỉ comment khi tool đã đẩy việc; không có việc
+    thì chờ 1 giây rồi thoát, không comment trùng.
+  - "Đăng lại bài lỗi" ở Tab 5 cũng được vòng lặp tự chạy,
+    không cần bấm tay.
+
+QUY TẮC BẮT BUỘC:
+  (1) Script cmt...txt phải đứng SAU removedone.txt, không chèn vào
+      giữa các page...txt (tool sẽ tưởng máy treo sau 360 giây).
+  (2) "Timeout cờ CMT" (Tab 5) phải DÀI HƠN thời gian 1 vòng lặp
+      đầy đủ lúc đang đăng bài. Mặc định 3600 giây (1 giờ).
+      Ví dụ: 1 vòng mất 90 phút -> đặt 10800 (3 giờ).
+      Đặt ngắn quá: bài bị báo "Comment lỗi" trước khi tới lượt
+      script comment chạy.
+  (3) Chỉ dùng file cmtpage...txt do tool tạo khi bấm Khởi Tạo
+      (mở ra thấy "WAIT=1" là đúng, lúc chưa có việc).
+      KHÔNG dùng file cũ tên cmtcmtpage...txt hoặc FILES\Link_page...txt:
+      bản cũ, không có chốt chặn, sẽ comment lặp. Nên xóa đi.
+  (4) Thêm page mới -> bấm Khởi Tạo lại -> thêm page...txt và
+      cmtpage...txt của page đó vào danh sách.
+
+KIỂM TRA SAU KHI CÀI:
+  - Làm 1 lần trước khi bật lặp: chạy tay page1fbM.txt lúc điện thoại
+    KHÔNG có cờ Done (chưa bấm "BẬT TẤT CẢ"). Script phải tự thoát,
+    không đăng bài. Nếu nó vẫn đăng: KHÔNG dùng vòng lặp vô hạn.
+  - Tab 5: bài đủ view chuyển "Đã đẩy comment, chờ script",
+    sau tối đa 1 vòng lặp thì thành "Đã comment".
+  - Ô nhật ký: "Đã comment xong [pageX]".
+==============================================================
+
+F. PROFILE FACEBOOK + PROXY (Tab 5 > nút "Profile Facebook")
+--------------------------------------------------------------
+Mỗi profile = 1 tài khoản Facebook đăng nhập sẵn, có thể kèm 1 proxy.
+BẮT BUỘC có tài khoản: chỉ profile ĐÃ ĐĂNG NHẬP mới được quét.
+  - Bấm "BẬT THEO DÕI": tool kiểm tra đăng nhập trước. Không có
+    tài khoản nào -> báo lỗi, KHÔNG quét, mở cửa sổ Profile.
+  - Phiên hết hạn / bị đăng xuất khi đang chạy -> profile bị khóa
+    "Chưa đăng nhập hoặc phiên đã hết hạn", báo Telegram -> chọn
+    profile, bấm "Đăng nhập" lại.
+  - Cột "Tài khoản FB": mã tài khoản đang đăng nhập (✅), hoặc
+    "chưa đăng nhập" / "chưa kiểm tra". Nút "Kiểm tra đăng nhập"
+    để kiểm tra lại 1 profile.
+Tool quét LẦN LƯỢT từng profile: mỗi profile mở N trang rồi chuyển
+sang profile kế tiếp (N ở ô "Đổi sang profile kế tiếp sau mỗi ...",
+mặc định 10; đặt 1 = mỗi lượt một profile).
+
+Proxy:
+  - Loại SOCKS5 hoặc HTTP. Dạng ip:port hoặc ip:port:user:pass
+    (giống danh sách SOCKS5 của AKPhoneS).
+  - Bấm "Kiểm tra proxy" trước khi dùng: báo IP ra ngoài nếu chạy tốt.
+  - LUÔN đăng nhập bằng nút "Đăng nhập" của chính profile đó, để
+    Facebook thấy cùng một IP lúc đăng nhập và lúc quét.
+
+Cột Trạng thái trong cửa sổ:
+  ✅ Sẵn sàng ................ chờ tới lượt
+  🟢 Đang quét ............... profile đang được dùng
+  ⏳ Proxy lỗi, nghỉ x phút .. tự thử lại sau 10 phút, không cần làm gì
+  🔒 Bị chặn: ... ........... Facebook đòi đăng nhập / checkpoint:
+                               chọn profile -> "Đăng nhập" lại
+                               (hoặc "Bỏ chặn" nếu đã xử lý cách khác)
+  ⏸️ Tắt ..................... bỏ tích "Dùng để quét"
+
+Khi đăng nhập hoặc xóa profile, tool tự tạm dừng theo dõi và tự bật
+lại khi xong. Profile bị chặn được báo qua Telegram.
+
+XÁC MINH LINK (chạy ngầm, song song với đọc view):
+  Tool KHÔNG gán link theo thứ tự đăng. Mỗi reel mới được mở ra đọc
+  caption gốc + giờ đăng, chỉ gán cho bài khi:
+    - caption trùng caption của bài (bỏ qua emoji, hoa/thường), VÀ
+    - giờ đăng trong khoảng 30 phút trước -> 15 phút sau lúc cờ
+      Done của bài bị xóa.
+  Reel đăng tay / không khớp bài nào: không bao giờ được gán.
+==============================================================
+
+G. SỬA SCRIPT MẪU (Tab 3)
+--------------------------------------------------------------
+- Sửa mẫu đăng bài / mẫu comment ở Tab 3 rồi bấm "Lưu Mẫu".
+  Tool tự KIỂM TRA mẫu với luồng xử lý:
+    Lỗi (chặn Khởi Tạo / Áp dụng):
+      - PUSH_FILE không dùng {VIDEO_DIR} (đường dẫn cứng như E:\AK_Running)
+      - thiếu GETDATA...={CAPTION_PATH}
+      - thiếu REMOVE=/storage/emulated/0/Android/Done/{ID}.txt
+      - mẫu comment thiếu OPENLINK_FROMFILE={LINK_PATH},
+        GETDATA...={COMMENT_PATH} hoặc dòng xóa cờ CMT
+      - biến lạ (vd {PAGENAME})
+    Cảnh báo (vẫn chạy): không kiểm tra cờ Done trước khi đăng,
+      còn lệnh sau dòng xóa cờ, script đăng bài có comment...
+- Script ĐANG DÙNG không tự đổi theo mẫu. Bấm
+  "Áp Dụng Mẫu Cho Script Đang Dùng" (hoặc chọn Có khi lưu):
+  chỉ viết lại các file script, KHÔNG đụng tới bài, kho, tiến độ.
+  Nên bấm lúc AKPhoneS không đang chạy script.
+- Mẫu comment mới có hiệu lực ngay ở lần đẩy comment kế tiếp.
+- Biến dùng được:
+    mẫu đăng bài: {ID} {PAGE_NAME} {VIDEO_DIR} {CAPTION_PATH} {COMMENT_PATH}
+    mẫu comment : {ID} {PAGE_NAME} {LINK_PATH} {COMMENT_PATH} {CMT_DIR}
+
+TÊN FILE TRÙNG MỖI NGÀY (vd vd1page1fb1.mp4 ngày nào cũng có):
+  Không sao. Mỗi bài có mã riêng + bản lưu riêng; caption, comment
+  được chép lúc nạp; link được xác minh bằng caption + giờ đăng.
+  Thư mục đệm chỉ giữ đúng video đang chờ đăng.
+==============================================================

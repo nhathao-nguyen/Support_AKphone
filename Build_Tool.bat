@@ -21,6 +21,8 @@ echo Synchronizing templates and configurations to dist...
 if exist "app_settings.json" copy /y "app_settings.json" "dist\" >nul
 if exist "template_script.txt" copy /y "template_script.txt" "dist\" >nul
 if exist "template_config.ini" copy /y "template_config.ini" "dist\" >nul
+if exist "template_cmt.txt" copy /y "template_cmt.txt" "dist\" >nul
+if exist "docs\HUONG_DAN_VAN_HANH.txt" copy /y "docs\HUONG_DAN_VAN_HANH.txt" "dist\" >nul
 
 if exist "configs" (
     if not exist "dist\configs" mkdir "dist\configs"

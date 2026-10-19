@@ -11,6 +11,9 @@ from typing import Dict, List, Optional, Set, Tuple
 from akphone_dispatcher.core.models import DeviceInfo
 from akphone_dispatcher.utils.logger import logger
 
+# Printed after `ls` with its exit code: no mark = the command never finished on the phone.
+_LS_END_MARK = "__AKLS_RC="
+
 
 class AdbSocketClient:
     """High-performance direct socket client for ADB server (TCP port 5037).
@@ -363,19 +366,32 @@ class AdbService:
             return False
 
     def init_round_flags(self, serial: str, page_ids: List[str]) -> bool:
-        """Seed indicator flag files into /storage/emulated/0/Android/Done/."""
-        touch_files = " ".join([f"/storage/emulated/0/Android/Done/{pid}.txt" for pid in page_ids])
+        """Seed indicator flag files into /storage/emulated/0/Android/Done/.
+
+        True only once the phone really holds exactly these flags: a cable pulled
+        mid-command must not start a round whose flags are not there.
+        """
+        done_dir = "/storage/emulated/0/Android/Done"
+        touch_files = " ".join([f"{done_dir}/{pid}.txt" for pid in page_ids])
         sh_cmd = (
-            "mkdir -p /storage/emulated/0/Android/Done && "
-            "rm -f /storage/emulated/0/Android/Done/* && "
-            f"touch {touch_files} /storage/emulated/0/Android/Done/round_done.txt"
+            f"mkdir -p {done_dir} && "
+            f"rm -f {done_dir}/* && "
+            f"touch {touch_files} {done_dir}/round_done.txt"
         )
         try:
             self.run_shell(serial, sh_cmd, timeout=8)
-            return True
         except Exception as e:
             logger.error(f"Lỗi nạp cờ Done lên điện thoại {serial}: {e}")
             return False
+        expected = set(page_ids) | {"round_done"}
+        present = self.list_flags(serial, done_dir)
+        if present != expected:
+            logger.error(
+                f"Nạp cờ Done lên điện thoại {serial} chưa thành công "
+                f"(đọc lại: {sorted(present) if present is not None else 'không đọc được'})."
+            )
+            return False
+        return True
 
     def list_done_flags(self, serial: str) -> Optional[Set[str]]:
         """List active flag file names currently present in the Done directory."""
@@ -399,23 +415,27 @@ class AdbService:
             return False
 
     def list_flags(self, serial: str, flag_dir: str) -> Optional[Set[str]]:
-        """List flag names (without .txt) in a phone directory; None if ADB failed."""
+        """List flag names (without .txt) in a phone directory.
+
+        None whenever the answer cannot be trusted: ADB failed, the phone dropped off
+        mid-command (adb then prints nothing), the output was cut, or the folder is
+        missing (storage not mounted yet while the phone boots). Reading any of these
+        as "no flag" would count every page as done.
+        """
         try:
-            output = self.run_shell(serial, f"ls {flag_dir}", timeout=4)
-            if output is None:
-                return None
-            raw_lines = [
-                f.strip()
-                for f in output.split()
-                if f.strip() and "No such" not in f and "error" not in f.lower()
-            ]
-            flags: Set[str] = set()
-            for f in raw_lines:
-                if f.endswith(".txt"):
-                    flags.add(f[:-4])
-                else:
-                    flags.add(f)
-            return flags
+            output = self.run_shell(
+                serial, f"ls {flag_dir} 2>&1; echo {_LS_END_MARK}$?", timeout=4
+            )
         except Exception:
             return None
-
+        if not output or _LS_END_MARK not in output:
+            return None
+        body, _, code = output.rpartition(_LS_END_MARK)
+        if code.strip() != "0":
+            return None
+        flags: Set[str] = set()
+        for f in body.split():
+            f = f.strip()
+            if f:
+                flags.add(f[:-4] if f.endswith(".txt") else f)
+        return flags

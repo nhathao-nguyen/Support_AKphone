@@ -9,6 +9,12 @@ if str(src_dir) not in sys.path:
     sys.path.insert(0, str(src_dir))
 
 datas, binaries, hiddenimports = collect_all('customtkinter')
+# Playwright is imported lazily (comment tracker), so PyInstaller cannot see it on its
+# own: bundle the package and its driver. Scans use the installed Edge, no browser download.
+pw_datas, pw_binaries, pw_hidden = collect_all('playwright')
+datas += pw_datas
+binaries += pw_binaries
+hiddenimports += pw_hidden + ['playwright.sync_api']
 hiddenimports += collect_submodules('akphone_dispatcher')
 
 a = Analysis(
