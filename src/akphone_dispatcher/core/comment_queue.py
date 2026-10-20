@@ -55,6 +55,17 @@ REPOST = "repost"
 
 ACTIVE_STATES = (FED, POSTED, LINKED, MARKED, REPOST)
 
+
+def posted_delta(job: Dict[str, Any], created_at: Optional[float]) -> Optional[float]:
+    """Seconds from the job's posting time to a reel's creation. A post that went live
+    while the tool was away has a window (posted_from .. posted_at): 0 inside it."""
+    start = job.get("posted_from")
+    if start is None or created_at is None or job.get("posted_at") is None:
+        return time_delta(created_at, job.get("posted_at"))
+    if created_at < start:
+        return float(created_at) - float(start)
+    return max(0.0, float(created_at) - float(job["posted_at"]))
+
 # new reel seen on a page, before it is proven to be one of our posts
 CAND_NEW = "new"  # waiting to be opened
 CAND_READ = "read"  # caption + time read, no post matched yet
@@ -247,6 +258,28 @@ class CommentQueue:
                 if job["serial"] == serial and job["page_id"] == page_id and job["state"] == FED:
                     job["state"] = POSTED
                     job["posted_at"] = time.time()
+                    self.save()
+                    return job
+            return None
+
+    def mark_posted_away(
+        self, serial: str, page_id: str, since: float, until: float
+    ) -> Optional[Dict[str, Any]]:
+        """The page's Done flag vanished while the tool was away (between ``since``, last
+        seen, and ``until``): the post went live at an unknown time in that window."""
+        with self.lock:
+            for job in self.jobs:
+                if job["serial"] == serial and job["page_id"] == page_id and job["state"] == FED:
+                    job.update(
+                        state=POSTED,
+                        posted_at=until,
+                        posted_from=min(since, until),
+                        note=(
+                            "Đăng lúc tool tắt (" + datetime.fromtimestamp(min(since, until)).strftime("%d/%m %H:%M")
+                            + " – " + datetime.fromtimestamp(until).strftime("%d/%m %H:%M")
+                            + "): khớp reel theo caption trong khoảng này"
+                        ),
+                    )
                     self.save()
                     return job
             return None
@@ -591,7 +624,7 @@ class CommentQueue:
                         continue
                     caption = job_caption(job)
                     caption_ok = captions_match(caption, cand["caption"]) if caption else None
-                    delta = time_delta(cand["created_at"] - clock_offset, job.get("posted_at"))
+                    delta = posted_delta(job, cand["created_at"] - clock_offset)
                     time_ok = time_matches(delta, before_s, after_s)
                     if caption_ok is False or not time_ok:
                         if delta is not None and (caption_ok or time_ok):

@@ -33,6 +33,8 @@ configs/session_state.json
 configs/comment_queue.json
 configs/comment_archive/
 configs/browser_profile*/
+configs/fb_profiles.json
+configs/comment_queue.json.bak
 
 # Environment variables
 .env

@@ -33,6 +33,18 @@ _MULTIPLIER = {
 _BLOCKED_RESOURCES = ("image", "media", "font")
 _REEL_SELECTOR = 'a[href*="/reel/"]'
 RECYCLE_AFTER_SCANS = 300  # restart the browser now and then to keep memory flat
+BASE_SCROLLS = 15  # enough for the newest reels of a page
+WANTED_PER_SCROLL = 3  # one more scroll allowed per this many tracked reels...
+MAX_SCROLLS = 80  # ...up to this (a page that stops loading ends sooner anyway)
+SCROLL_FIRST_WAIT_MS = 700  # after a scroll, look for new tiles this soon...
+SCROLL_POLL_MS = 500  # ...then again this often...
+SCROLL_LOAD_WAIT_MS = 4000  # ...for this long before it counts as "nothing more"
+
+
+def scroll_limit(wanted: int, base: int = BASE_SCROLLS) -> int:
+    """Scrolls allowed for a Reels-tab read: deeper when many reels are tracked (day 7
+    holds a week of posts), so the oldest tracked ones are still reached."""
+    return max(base, min(MAX_SCROLLS, base + wanted // WANTED_PER_SCROLL))
 
 _COLLECT_JS = """
 () => Array.from(document.querySelectorAll('a[href*="/reel/"]'))
@@ -188,7 +200,7 @@ class FbWebSource:
         page_url: str,
         want_urls: Optional[Iterable[str]] = None,
         min_count: int = 10,
-        max_scrolls: int = 15,
+        max_scrolls: int = BASE_SCROLLS,
     ) -> List[Tuple[str, Optional[int]]]:
         """Return reels of the page, newest first, as (reel url, views or None).
 
@@ -210,17 +222,29 @@ class FbWebSource:
             return []  # page without any reel yet
         reels = collect_reels(page.evaluate(_COLLECT_JS))
         stalls = 0
-        for _ in range(max_scrolls):
+        for _ in range(scroll_limit(len(want), max_scrolls)):
             if len(reels) >= min_count and want <= {url for url, _ in reels}:
                 break
             if stalls >= 2:
                 break
             page.mouse.wheel(0, 4000)
-            page.wait_for_timeout(700)
-            more = collect_reels(page.evaluate(_COLLECT_JS))
+            more = self._wait_for_more(page, len(reels))
             stalls = stalls + 1 if len(more) == len(reels) else 0
             reels = more
         return reels
+
+    @staticmethod
+    def _wait_for_more(page, have: int) -> List[Tuple[str, Optional[int]]]:
+        """After a scroll Facebook often needs 1-3 s to add the next tiles: poll a while
+        before calling it a stall, or the read stops at the first 10 reels."""
+        waited = 0
+        while True:
+            step = SCROLL_FIRST_WAIT_MS if waited == 0 else SCROLL_POLL_MS
+            page.wait_for_timeout(step)
+            waited += step
+            reels = collect_reels(page.evaluate(_COLLECT_JS))
+            if len(reels) > have or waited >= SCROLL_LOAD_WAIT_MS:
+                return reels
 
     def close(self):
         try:

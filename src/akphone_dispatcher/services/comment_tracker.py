@@ -88,6 +88,7 @@ def facebook_server_time(timeout: float = 10.0) -> Optional[float]:
         return None
 DONE_DIR = "/storage/emulated/0/Android/Done"
 IDLE_SECONDS = 5
+LAG_ALERT_MIN_S = 15 * 60  # views read this late (or half the interval, if longer) -> alert
 NEW_STREAM_MIN_REELS = 10
 
 BASELINE = "baseline"
@@ -155,10 +156,13 @@ class CommentTracker:
         is_feeding: Optional[Callable[[str], bool]] = None,
         profile_store: Optional[FbProfileStore] = None,
         reader_factory: Optional[Callable[[], object]] = None,
+        is_page_off: Optional[Callable[[str, str], bool]] = None,
     ):
         self.config = config
         # True while the device's auto run is posting: re-posts wait for it to finish
         self.is_feeding = is_feeding or (lambda serial: False)
+        # (serial, page_id) turned off by hand in Tab 2: never scanned, no comment pushed
+        self.is_page_off = is_page_off or (lambda serial, page_id: False)
         self.adb = adb
         self.notifier = notifier
         self.queue = queue
@@ -176,6 +180,9 @@ class CommentTracker:
         self._clock_checked_at = 0.0
         self._clock_warned = False
 
+        # Held while re-posts are staged / checked, and by Khởi Tạo while it resets a phone
+        # (always taken before the queue's own lock)
+        self.repost_lock = threading.Lock()
         self.stop_event = threading.Event()
         self.scan_wake = threading.Event()
         self.verify_wake = threading.Event()
@@ -189,6 +196,9 @@ class CommentTracker:
         self.blocked_reason = ""
         self.scan_times: Deque[float] = deque()
         self._warned_no_url: Set[str] = set()
+        self.started_at = time.time()  # pages not read yet since start are due from here
+        self.rate_note = ""  # set while every account used up its page loads of the hour
+        self._lag_alerted = False
 
     # ---------- lifecycle ----------
     def _default_source(self):
@@ -218,6 +228,8 @@ class CommentTracker:
             return
         self.stop_event.clear()
         self.blocked_reason = ""
+        self.started_at = time.time()
+        self._lag_alerted = False
         self.flags_thread = threading.Thread(
             target=self._flags_loop, name="CommentFlags", daemon=True
         )
@@ -274,7 +286,43 @@ class CommentTracker:
             "profile": getattr(self.active_source, "current_name", ""),
             "verifying": self.queue.count_unverified(),
             "verify_note": self.verify_note or self.network_note,
+            "views_lag_min": int(self.views_lag(now)[0] // 60),
+            "rate_note": self.rate_note,
         }
+
+    # ---------- views stream behind schedule ----------
+    def views_lag(self, now: float) -> Tuple[float, int]:
+        """(seconds the most overdue page is late for its views read, pages late)."""
+        every = self.config.comment.views_interval_min * 60
+        lags = [
+            now - (self.views_scanned.get(page, self.started_at) + every)
+            for page in {
+                j["page_url"] for j in self._scannable_jobs() if j["state"] == LINKED
+            }
+        ]
+        late = [lag for lag in lags if lag > 0]
+        return (max(late) if late else 0.0), len(late)
+
+    def _check_views_lag(self, now: float):
+        """Warn once when the views reads fall behind (too many pages for the accounts /
+        the hourly limit), and once more when they are back on time."""
+        every = self.config.comment.views_interval_min * 60
+        limit = max(LAG_ALERT_MIN_S, every / 2)
+        lag, pages = self.views_lag(now)
+        if not self._lag_alerted and lag >= limit and not self.blocked_reason:
+            self._lag_alerted = True
+            message = (
+                f"Đọc view đang trễ {lag / 60:.0f} phút so với chu kỳ "
+                f"{self.config.comment.views_interval_min} phút ({pages} page). "
+                + (f"{self.rate_note}. " if self.rate_note else "")
+                + "Thêm tài khoản quét, tăng giới hạn lượt/giờ hoặc tăng chu kỳ đọc view."
+            )
+            logger.warning(f"[Comment] {message}")
+            self.notifier.send_message(f"⚠️ <b>[Comment] Đọc view bị trễ</b>\n{message}")
+        elif self._lag_alerted and lag < limit / 2:
+            self._lag_alerted = False
+            logger.info("[Comment] Đọc view đã kịp chu kỳ trở lại.")
+            self.notifier.send_message("✅ <b>[Comment]</b> Đọc view đã kịp chu kỳ trở lại.")
 
     # ---------- threads ----------
     def _flags_loop(self):
@@ -436,6 +484,7 @@ class CommentTracker:
         self._expire(now)
         self._push_ready(now)
         self._drive_reposts(now)
+        self._check_views_lag(now)
         self.queue.archive_finished(self.config.comment.archive_after_hours * 3600, now)
 
     def tick(self, source, now: Optional[float] = None, max_scans: int = 1000, reader=None):
@@ -549,6 +598,8 @@ class CommentTracker:
         )
         for job in ready:
             serial, pid = job["serial"], job["page_id"]
+            if self.is_page_off(serial, pid):
+                continue
             if self.queue.has_marked(serial, pid):
                 continue  # one comment job per page at a time
             if not self.adb.is_device_ready(serial):
@@ -577,40 +628,64 @@ class CommentTracker:
 
     # ---------- re-post (asked from the GUI) ----------
     def _drive_reposts(self, now: float):
-        by_page: Dict[Tuple[str, str], List[dict]] = defaultdict(list)
-        for job in self.queue.active_jobs():
-            if job["state"] == REPOST:
-                by_page[(job["serial"], job["page_id"])].append(job)
+        pages = {(j["serial"], j["page_id"]) for j in self.queue.active_jobs() if j["state"] == REPOST}
+        for serial, pid in sorted(pages):
+            # Khởi Tạo holds this lock from its staged-repost check until every page has its
+            # new FED job, so a re-post is never staged (or read as posted) in between.
+            with self.repost_lock:
+                self._drive_page_reposts(serial, pid, now)
 
-        for (serial, pid), jobs in by_page.items():
-            staged = [j for j in jobs if j["repost_state"] == REPOST_STAGED]
-            if self.is_feeding(serial):
-                for job in staged:  # the auto run rewrites the running dir and Done flags
-                    self.queue.update(
-                        job,
-                        repost_state=REPOST_QUEUED,
-                        note="Máy đang chạy auto: chờ chạy xong rồi nạp lại",
-                    )
-                continue
-            if staged:
-                job = staged[0]
-                flags = self.adb.list_flags(serial, DONE_DIR)
-                if flags is not None and pid not in flags:
-                    self.queue.update(
-                        job,
-                        state=POSTED,
-                        posted_at=now,
-                        repost_state="",
-                        link_attempts=0,
-                        next_link_at=None,
-                        note=f"Đã đăng lại (lần {job['repost_count']})",
-                    )
-                    logger.info(
-                        f"🔁 [MÁY {serial}] [{pid}] bài {job['post_num']} đã đăng lại; đang chờ thấy reel."
-                    )
-                continue
-            if self.adb.is_device_ready(serial):
-                self._stage_repost(min(jobs, key=lambda j: j["fed_at"] or 0), now)
+    def _drive_page_reposts(self, serial: str, pid: str, now: float):
+        page_jobs = [
+            j for j in self.queue.active_jobs() if j["serial"] == serial and j["page_id"] == pid
+        ]
+        jobs = [j for j in page_jobs if j["state"] == REPOST]
+        if not jobs:
+            return
+        staged = [j for j in jobs if j["repost_state"] == REPOST_STAGED]
+        if self.is_feeding(serial):
+            for job in staged:  # the auto run rewrites the running dir and Done flags
+                self.queue.update(
+                    job,
+                    repost_state=REPOST_QUEUED,
+                    note="Máy đang chạy auto: chờ chạy xong rồi nạp lại",
+                )
+            return
+        if staged:
+            job = staged[0]
+            flags = self.adb.list_flags(serial, DONE_DIR)
+            if flags is not None and pid not in flags:
+                self.queue.update(
+                    job,
+                    state=POSTED,
+                    posted_at=now,
+                    posted_from=None,
+                    repost_state="",
+                    link_attempts=0,
+                    next_link_at=None,
+                    note=f"Đã đăng lại (lần {job['repost_count']})",
+                )
+                logger.info(
+                    f"🔁 [MÁY {serial}] [{pid}] bài {job['post_num']} đã đăng lại; đang chờ thấy reel."
+                )
+            return
+        if self.is_page_off(serial, pid):
+            off = "Page đã tắt (Tab 2): bật lại page thì mới nạp lại"
+            for job in jobs:
+                if job.get("note") != off:
+                    self.queue.update(job, note=off)
+            return
+        if any(j["state"] == FED for j in page_jobs):
+            # The running dir + Done flag hold a newer post still waiting to go out
+            # (e.g. right after Khởi Tạo, or auto stopped mid-round): staging now would
+            # wipe its video and make AKPhoneS post the old one twice.
+            waiting = "Page đang có bài mới chờ đăng: đăng xong bài đó mới nạp lại"
+            for job in jobs:
+                if job.get("note") != waiting:
+                    self.queue.update(job, note=waiting)
+            return
+        if self.adb.is_device_ready(serial):
+            self._stage_repost(min(jobs, key=lambda j: j["fed_at"] or 0), now)
 
     def _stage_repost(self, job: dict, now: float):
         """Put the post's video + caption back for its page and create its Done flag."""
@@ -671,11 +746,14 @@ class CommentTracker:
             j["page_url"]
             for j in self.queue.active_jobs()
             if j["state"] in (POSTED, LINKED) and j.get("page_url")
+            and not self.is_page_off(j["serial"], j["page_id"])
         }
 
     def _scannable_jobs(self) -> List[dict]:
         jobs = []
         for job in self.queue.active_jobs():
+            if self.is_page_off(job["serial"], job["page_id"]):
+                continue
             if job.get("page_url"):
                 jobs.append(job)
                 continue
@@ -747,6 +825,15 @@ class CommentTracker:
         label = self._page_label(page)
         want = self.queue.tracked_urls(page) if kind == VIEWS else set()
 
+        wait = getattr(source, "capacity_wait", lambda when: 0.0)(now)
+        if wait > 0:  # every account used its loads of the hour: nothing changes, retry later
+            limit = getattr(getattr(source, "store", None), "max_per_hour", 0)
+            self.rate_note = (
+                f"Mọi tài khoản đã đủ {limit} lượt mở trang/giờ: chờ {wait / 60:.0f} phút"
+            )
+            return False
+        self.rate_note = ""
+
         self.scan_times.append(now)
         try:
             reels = source.scan(page, want_urls=want, min_count=NEW_STREAM_MIN_REELS)
@@ -797,6 +884,8 @@ class CommentTracker:
             for job in self.queue.active_jobs():
                 if job.get("page_url") != page or job["state"] != POSTED:
                     continue
+                if self.is_page_off(job["serial"], job["page_id"]):
+                    continue  # not looked for: its tries are not used up
                 attempts = (job.get("link_attempts") or 0) + 1
                 fast = attempts < cfg.link_fast_attempts
                 delay = cfg.link_retry_s if fast else cfg.views_interval_min * 60

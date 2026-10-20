@@ -21,6 +21,7 @@ from akphone_dispatcher.services.session import SessionManager
 from akphone_dispatcher.utils.logger import logger
 
 FEED_RETRY_S = 60  # retry a failed feed this often (the user may fix the store meanwhile)
+SEEN_SAVE_S = 30  # while a round runs, "flags last seen" is saved this often
 
 
 def queue_post_comment(
@@ -98,6 +99,11 @@ class DeviceFeederWorker:
         self.last_flag_change_time = time.time()
         self.feed_retry_at: Dict[str, float] = {}  # page -> next try after a failed feed
         self._timeouts_in_row = 0  # watchdog fired with no flag removed since
+        # the saved round (profile.round_flags) is checked against the phone once per start,
+        # before anything else is saved or flagged
+        self._reconciled = False
+        self._flags_seen_at = 0.0  # last poll that read the Done folder
+        self._seen_saved_at = 0.0
 
     def start(self):
         self.stop_event.clear()
@@ -117,6 +123,7 @@ class DeviceFeederWorker:
         self.pending_feed = {}
         self.sentinel_active = False
         self.feed_retry_at = {}
+        self._reconciled = False
         self.thread = threading.Thread(
             target=self._run, name=f"Worker-{self.serial}-{self.profile.via_tag}", daemon=True
         )
@@ -136,6 +143,10 @@ class DeviceFeederWorker:
 
     def _save_progress(self):
         """Persist this phone's progress right away: a power cut resumes from here."""
+        if self._reconciled:  # until then the profile still holds the previous run's round
+            self.profile.round_flags = sorted(self.current_round_flags)
+            self.profile.round_flags_seen_at = self._flags_seen_at if self.current_round_flags else 0.0
+            self._seen_saved_at = time.time()
         try:
             self.session_manager.save_device(self.serial, self.profile)
         except Exception as e:
@@ -222,6 +233,9 @@ class DeviceFeederWorker:
                 f"✅ [MÁY {self.serial}] [{page_id}] hoàn tất toàn bộ {info.total_posts} bài!"
             )
             return True
+        if self.profile.page_off(page_id):  # turned off: the next post stays in the store
+            logger.info(f"⛔ [MÁY {self.serial}] [{page_id}] page đã tắt: không nạp bài tiếp.")
+            return False
         next_idx = info.current_idx + 1
         if self._feed_post(page_id, next_idx):
             logger.info(
@@ -235,6 +249,8 @@ class DeviceFeederWorker:
         (feed failed earlier, or the tool stopped between posting and feeding)."""
         now = time.time()
         for pid, info in self.profile.pages_data.items():
+            if self.profile.page_off(pid):
+                continue
             if info.needs_feed and self.feed_retry_at.get(pid, 0) <= now:
                 self._advance_page(pid)
 
@@ -244,7 +260,10 @@ class DeviceFeederWorker:
         Only pages whose running dir holds a post not yet live take part.
         """
         self._retry_pending_feeds()
-        active = [pid for pid, info in self.profile.pages_data.items() if info.ready_to_post]
+        active = [
+            pid for pid, info in self.profile.pages_data.items()
+            if info.ready_to_post and not self.profile.page_off(pid)
+        ]
         if not active:
             return False
         if not self.adb.init_round_flags(self.serial, active):
@@ -254,6 +273,7 @@ class DeviceFeederWorker:
         self.profile.round_number = self.round_number
         self.active_round_pages = active
         self.current_round_flags = set(active)
+        self._flags_seen_at = time.time()
         self.round_succeeded = set()
         self.round_failed = set()
         self.pending_feed = {}
@@ -266,8 +286,38 @@ class DeviceFeederWorker:
         )
         return True
 
+    def _reconcile_away_posts(self) -> bool:
+        """Pages of the saved round whose Done flag vanished while no worker watched
+        (tool closed / stopped while AKPhoneS kept running) were posted then: count them
+        as posted instead of flagging the same video again. False = phone unreadable."""
+        saved = [pid for pid in self.profile.round_flags if pid in self.profile.pages_data]
+        if saved:
+            present = self.adb.list_done_flags(self.serial)
+            if present is None:
+                return False  # never guess: an unreadable folder is not "flags removed"
+            now = time.time()
+            since = self.profile.round_flags_seen_at or now
+            for pid in saved:
+                info = self.profile.pages_data[pid]
+                if pid in present or info.is_completed or info.posted_idx >= info.current_idx:
+                    continue
+                info.posted_idx = info.current_idx
+                info.fail_streak = 0
+                info.last_status = f"Hoàn tất Bài {info.current_idx} (đăng lúc tool tắt)"
+                if self.comment_queue is not None:
+                    self.comment_queue.mark_posted_away(self.serial, pid, since, now)
+                logger.warning(
+                    f"🔎 [MÁY {self.serial} | {self.profile.via_tag}] [{pid}] cờ Done đã mất lúc tool tắt: "
+                    f"AKPhoneS đã đăng bài {info.current_idx}. Không cắm cờ lại, nạp bài kế tiếp."
+                )
+        self._reconciled = True
+        self._save_progress()
+        return True
+
     def _all_posted(self) -> bool:
-        return all(info.is_completed for info in self.profile.pages_data.values())
+        return all(
+            info.is_completed or self.profile.page_off(pid) for pid, info in self.profile.pages_data.items()
+        )
 
     def _pages_failed(self, pids: List[str], status: str, reason: str):
         """These pages failed this round: one screenshot + alert + Facebook restart for all,
@@ -366,6 +416,9 @@ class DeviceFeederWorker:
 
             time.sleep(base_interval)
 
+            if not self._reconciled and not self._reconcile_away_posts():
+                continue
+
             # Initialize first round on this phone
             if not round_initialized:
                 if not self._init_done_round():
@@ -390,6 +443,9 @@ class DeviceFeederWorker:
                 if files_in_done is None:
                     time.sleep(1)
                     continue
+                self._flags_seen_at = time.time()
+                if self.current_round_flags and self._flags_seen_at - self._seen_saved_at >= SEEN_SAVE_S:
+                    self._save_progress()  # keeps "last seen" fresh for the away window
 
                 # 0. Check sentinel flag round_done.txt on this phone
                 sentinel_triggered = False
@@ -532,7 +588,8 @@ class DeviceFeederWorker:
                         self.notifier.send_message(round_msg)
 
                     still_has_posts = [
-                        p for p, inf in self.profile.pages_data.items() if not inf.is_completed
+                        p for p, inf in self.profile.pages_data.items()
+                        if not inf.is_completed and not self.profile.page_off(p)
                     ]
                     if not still_has_posts:
                         self.profile.status = "🎉 Hoàn tất toàn bộ"

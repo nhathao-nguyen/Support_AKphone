@@ -92,10 +92,19 @@ class DeviceProfile:
     status: str = "Chưa khởi tạo"
     round_number: int = 0
     device_info: Optional[DeviceInfo] = None
+    # page ids turned off by hand (dead / blocked page): never fed, never flagged
+    disabled_pages: List[str] = field(default_factory=list)
+    # Done flags of the round in progress (saved): a flag gone while the tool was away
+    # means AKPhoneS posted it then. round_flags_seen_at = last time they were seen.
+    round_flags: List[str] = field(default_factory=list)
+    round_flags_seen_at: float = 0.0
 
     @property
     def via_tag(self) -> str:
         return f"fb{self.fb_index}"
+
+    def page_off(self, page_id: str) -> bool:
+        return page_id in self.disabled_pages
 
     @property
     def total_pages(self) -> int:
@@ -109,7 +118,8 @@ class DeviceProfile:
     def progress_summary(self) -> str:
         if not self.pages_data:
             return "0/0"
-        return f"{self.completed_pages}/{self.total_pages} xong"
+        off = sum(1 for pid in self.pages_data if self.page_off(pid))
+        return f"{self.completed_pages}/{self.total_pages} xong" + (f" · {off} tắt" if off else "")
 
 
 @dataclass

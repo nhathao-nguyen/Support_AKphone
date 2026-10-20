@@ -24,9 +24,10 @@ if exist "template_config.ini" copy /y "template_config.ini" "dist\" >nul
 if exist "template_cmt.txt" copy /y "template_cmt.txt" "dist\" >nul
 if exist "docs\HUONG_DAN_VAN_HANH.txt" copy /y "docs\HUONG_DAN_VAN_HANH.txt" "dist\" >nul
 
-if exist "configs" (
+rem Only the default settings ship; runtime data (profiles, queue, session) is created on first run.
+if exist "configs\app_settings.json" (
     if not exist "dist\configs" mkdir "dist\configs"
-    copy /y "configs\*" "dist\configs\" >nul
+    copy /y "configs\app_settings.json" "dist\configs\" >nul
 )
 
 if exist "assets" (

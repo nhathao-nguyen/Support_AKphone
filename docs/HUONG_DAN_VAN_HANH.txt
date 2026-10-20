@@ -74,6 +74,14 @@ MỖI LẦN CHẠY:
      Sửa đúng chỗ ghi trong bảng rồi bấm Khởi Tạo lại.
      Chỉ cảnh báo (vẫn khởi tạo, xem ô nhật ký): video không có
      comment (bài đó không comment), file caption/comment thừa.
+     Trước khi nạp kho mới, tool XÓA hết cờ Done cũ trên điện thoại
+     (cờ CMT không bị đụng). Vì vậy điện thoại phải đang kết nối ADB:
+       - không xóa được cờ -> bảng "Chưa Xóa Được Cờ Done - Chưa Khởi
+         Tạo": cắm lại cáp, bấm "Quét ADB" rồi Khởi Tạo lại
+       - máy có bài đang chờ AKPhoneS đăng lại (Tab 5) -> bảng "Đang
+         Chờ Đăng Lại - Chưa Khởi Tạo": đợi đăng xong rồi Khởi Tạo lại
+     Bài cũ đã đăng (chờ link / theo dõi view / chờ comment) vẫn được
+     theo dõi và comment bình thường, không bị ảnh hưởng.
   6. Trên AKPhoneS: bật vòng lặp của từng máy (cách cài ở mục E).
   7. Bấm "BẬT TẤT CẢ" để bắt đầu đăng bài.
 
@@ -116,6 +124,21 @@ TAB 2 - từng page (cột Tiến Độ dạng 3/10 và cột Trạng Thái):
   Lỗi nạp bài N ................... bổ sung hoặc sửa file bài N trong
                                     kho; tool tự thử lại mỗi 60 giây,
                                     không đăng trùng
+  ⛔ Đã tắt (bấm Bật lại page) .... page đã được tắt bằng tay (xem dưới)
+
+  PAGE DIE / BỊ CHẶN ĐĂNG: chọn dòng page (giữ Ctrl để chọn nhiều) rồi
+  bấm "⛔ Tắt page". Page tắt:
+    - không nạp bài mới, không cắm cờ Done, không vào vòng chạy
+    - Khởi Tạo bỏ qua page này (bài vẫn nằm nguyên trong kho)
+    - luồng comment ngừng quét page và không đẩy comment
+    - được lưu trong cấu hình máy: tắt/mở tool, sang ngày mới vẫn tắt
+    - máy chỉ còn page tắt chưa xong thì vẫn báo "Hoàn tất toàn bộ"
+  Page đang có cờ Done trong vòng hiện tại vẫn chạy nốt vòng đó.
+  Nên bỏ page...txt và cmtpage...txt của page đó khỏi vòng lặp AKPhoneS.
+  Page sống lại: chọn dòng, bấm "✅ Bật lại page" -> chạy lại từ vòng sau
+  (chưa có bài nạp sẵn thì tool nạp bài kế tiếp trước), luồng comment
+  quét lại page. Máy đã dừng / đã báo hoàn tất thì bấm Chạy lại máy đó,
+  và thêm lại 2 script của page vào vòng lặp AKPhoneS.
 
 TAB 5 - Máy > Page > Bài:
   Đã đăng, chờ thấy link ............... chờ (cột ghi chú: "Đã thấy reel mới,
@@ -163,6 +186,18 @@ D. DỪNG TOOL
     quá 2 phút thì báo để bật đồng bộ giờ Windows.
   - Mất điện hoặc tắt nhầm: mở lại tool, chọn CÓ khôi phục,
     rồi bấm "BẬT TẤT CẢ".
+  - Tắt tool / DỪNG giữa vòng mà vòng lặp AKPhoneS vẫn chạy: tool
+    nhớ các cờ Done của vòng đó. Lần sau bấm Chạy, tool đọc lại điện
+    thoại TRƯỚC khi cắm cờ:
+      - cờ nào đã mất -> AKPhoneS đã đăng bài đó lúc tool vắng: KHÔNG
+        cắm cờ lại (không đăng trùng), nạp luôn bài kế tiếp. Nhật ký ghi
+        "cờ Done đã mất lúc tool tắt"
+      - cờ còn nguyên -> bài chưa đăng, chạy như bình thường
+      - không đọc được điện thoại -> chờ, không cắm cờ, không đoán
+    Bài đăng lúc tool vắng không biết giờ đăng chính xác: Tab 5 ghi
+    "Đăng lúc tool tắt (từ ... đến ...)" và khớp reel theo caption,
+    giờ đăng trong khoảng tool vắng.
+    Khởi Tạo xóa cờ cũ và quên vòng cũ (không bị tính là đã đăng).
 ==============================================================
 
 E. CÀI VÒNG LẶP TRÊN AKPHONES (mỗi điện thoại 1 danh sách)
@@ -229,6 +264,29 @@ BẮT BUỘC có tài khoản: chỉ profile ĐÃ ĐĂNG NHẬP mới được q
 Tool quét LẦN LƯỢT từng profile: mỗi profile mở N trang rồi chuyển
 sang profile kế tiếp (N ở ô "Đổi sang profile kế tiếp sau mỗi ...",
 mặc định 10; đặt 1 = mỗi lượt một profile).
+
+GIỚI HẠN LƯỢT/GIỜ (chống bị khóa): ô "Tối đa ... lượt/giờ mỗi tài
+khoản" (mặc định 40, 0 = không giới hạn), bấm "Lưu" cạnh đó.
+  - Mỗi tài khoản mở tab Reels tối đa bấy nhiêu lần trong 60 phút
+    bất kỳ. Đủ lượt thì chuyển sang tài khoản khác; cột Trạng thái
+    hiện "⌛ Đủ ... lượt trong 1 giờ".
+  - Mọi tài khoản đều đủ lượt -> tool CHỜ (không đánh dấu gì, không
+    tính là lỗi); Tab 5 hiện "⌛ Mọi tài khoản đã đủ ... lượt/giờ".
+  - Cột "Lượt quét" = tổng lượt (số lượt trong 1 giờ qua).
+  - Chỉ tính lượt mở tab Reels. Luồng xác minh mở từng reel mới (1 lần
+    mỗi reel) bằng đăng nhập của profile đang quét, không tính vào đây.
+  - Số lượt được đếm lại từ 0 mỗi lần mở tool.
+
+ĐỌC VIEW BỊ TRỄ: mỗi Fanpage được mở 1 lần mỗi chu kỳ "Đọc view mỗi
+(phút)" để đọc view của mọi bài đang theo dõi trên page đó. Quá nhiều
+page so với số tài khoản / giới hạn lượt/giờ thì chu kỳ bị giãn:
+  - Tab 5 hiện "⚠ đọc view trễ X phút"
+  - trễ quá 15 phút (hoặc nửa chu kỳ nếu chu kỳ dài hơn) -> báo
+    Telegram 1 lần; kịp lại -> báo "đã kịp chu kỳ"
+  - cách xử lý: thêm tài khoản quét, tăng giới hạn lượt/giờ, hoặc
+    tăng chu kỳ đọc view
+Trang Reels được cuộn sâu theo số reel đang theo dõi (tối đa 80 lần
+cuộn), nên ngày thứ 7 vẫn đọc tới các reel cũ nhất.
 
 Proxy:
   - Loại SOCKS5 hoặc HTTP. Dạng ip:port hoặc ip:port:user:pass

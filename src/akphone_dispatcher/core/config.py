@@ -88,6 +88,7 @@ class AppConfig:
             prof.setdefault("page_names", self.page_names)
             prof.setdefault("page_links", "")
             prof.setdefault("enabled", True)
+            prof.setdefault("disabled_pages", [])
             return prof
 
         # Auto-create dynamic profile
@@ -97,13 +98,14 @@ class AppConfig:
             "page_names": self.page_names,
             "page_links": "",
             "enabled": True,
+            "disabled_pages": [],
         }
         self.device_profiles[serial] = new_prof
         return new_prof
 
     def set_profile(self, serial: str, profile_data: Dict[str, Any]):
-        """Save or update profile data for a specific device serial."""
-        self.device_profiles[serial] = profile_data
+        """Save or update profile data for a specific device serial (keys not given are kept)."""
+        self.device_profiles.setdefault(serial, {}).update(profile_data)
         self.save()
 
     def auto_assign_profiles(self, serials: List[str]):

@@ -393,6 +393,26 @@ class AdbService:
             return False
         return True
 
+    def clear_done_flags(self, serial: str) -> bool:
+        """Remove every flag in the Done directory (before feeding a new store).
+
+        True only once the phone is read back with no flag left.
+        """
+        done_dir = "/storage/emulated/0/Android/Done"
+        try:
+            self.run_shell(serial, f"mkdir -p {done_dir} && rm -f {done_dir}/*", timeout=8)
+        except Exception as e:
+            logger.error(f"Lỗi xóa cờ Done trên điện thoại {serial}: {e}")
+            return False
+        present = self.list_flags(serial, done_dir)
+        if present != set():
+            logger.error(
+                f"Xóa cờ Done trên điện thoại {serial} chưa thành công "
+                f"(đọc lại: {sorted(present) if present is not None else 'không đọc được'})."
+            )
+            return False
+        return True
+
     def list_done_flags(self, serial: str) -> Optional[Set[str]]:
         """List active flag file names currently present in the Done directory."""
         return self.list_flags(serial, "/storage/emulated/0/Android/Done")

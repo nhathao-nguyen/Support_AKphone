@@ -74,7 +74,7 @@ class FbProfilesDialog(ctk.CTkToplevel):
             ("account", "Tài khoản FB", 140),
             ("proxy", "Proxy", 200),
             ("state", "Trạng thái", 330),
-            ("scans", "Lượt quét", 70),
+            ("scans", "Lượt quét", 110),
         ):
             self.tree.heading(col, text=text)
             self.tree.column(col, width=width, anchor="w")
@@ -118,7 +118,11 @@ class FbProfilesDialog(ctk.CTkToplevel):
         self.entry_rotate = ctk.CTkEntry(bottom, width=50)
         self.entry_rotate.pack(side="left", padx=4)
         self.entry_rotate.insert(0, str(self.store.rotate_every))
-        ctk.CTkLabel(bottom, text="lượt mở trang (1 = mỗi lượt 1 profile)").pack(side="left")
+        ctk.CTkLabel(bottom, text="lượt mở trang (1 = mỗi lượt 1 profile) · Tối đa").pack(side="left")
+        self.entry_max_hour = ctk.CTkEntry(bottom, width=50)
+        self.entry_max_hour.pack(side="left", padx=4)
+        self.entry_max_hour.insert(0, str(self.store.max_per_hour))
+        ctk.CTkLabel(bottom, text="lượt/giờ mỗi tài khoản (0 = không giới hạn)").pack(side="left")
         ctk.CTkButton(bottom, text="Lưu", width=60, command=self._save_rotate).pack(
             side="left", padx=8
         )
@@ -143,18 +147,25 @@ class FbProfilesDialog(ctk.CTkToplevel):
         for iid in self.tree.get_children():
             if iid not in wanted:
                 self.tree.delete(iid)
+        limit = self.store.max_per_hour
         for index, p in enumerate(profiles):
+            state = profile_state(
+                p,
+                pool.cooldown.get(p["id"], 0) if pool else 0,
+                now,
+                pool.current_name if pool else "",
+            )
+            if pool and limit and state.startswith(("✅", "🟢")) and pool.loads_last_hour(p["id"], now) >= limit:
+                state = f"⌛ Đủ {limit} lượt trong 1 giờ: nghỉ tới khi bớt lượt"
             values = (
                 p["name"],
                 account_label(p),
                 proxy_label(p),
-                profile_state(
-                    p,
-                    pool.cooldown.get(p["id"], 0) if pool else 0,
-                    now,
-                    pool.current_name if pool else "",
+                state,
+                (
+                    f"{pool.scans.get(p['id'], 0)} ({pool.loads_last_hour(p['id'], now)}/giờ)"
+                    if pool else 0
                 ),
-                (pool.scans.get(p["id"], 0) if pool else 0),
             )
             if self.tree.exists(p["id"]):
                 self.tree.item(p["id"], values=values)
@@ -303,9 +314,18 @@ class FbProfilesDialog(ctk.CTkToplevel):
     def _save_rotate(self):
         try:
             value = int(self.entry_rotate.get().strip())
+            limit = int(self.entry_max_hour.get().strip())
+            if value < 1 or limit < 0:
+                raise ValueError
         except ValueError:
-            messagebox.showerror("Lỗi", "Số lượt phải là số nguyên ≥ 1.", parent=self)
+            messagebox.showerror(
+                "Lỗi", "Số lượt đổi profile phải ≥ 1; số lượt/giờ phải ≥ 0 (0 = không giới hạn).",
+                parent=self,
+            )
             return
         self.store.set_rotate_every(value)
-        self.entry_rotate.delete(0, "end")
-        self.entry_rotate.insert(0, str(self.store.rotate_every))
+        self.store.set_max_per_hour(limit)
+        for entry, saved in ((self.entry_rotate, self.store.rotate_every),
+                             (self.entry_max_hour, self.store.max_per_hour)):
+            entry.delete(0, "end")
+            entry.insert(0, str(saved))

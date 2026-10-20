@@ -26,6 +26,8 @@ def device_snapshot(prof: DeviceProfile) -> Dict[str, Any]:
         "page_links": prof.page_links,
         "enabled": prof.enabled,
         "round_number": prof.round_number,
+        "round_flags": list(prof.round_flags),
+        "round_flags_seen_at": prof.round_flags_seen_at,
         "status": prof.status,
         "pages": {
             pid: {
@@ -164,6 +166,8 @@ def restore_device_profiles(
         prof.page_links = s_data.get("page_links", prof.page_links)
         prof.enabled = s_data.get("enabled", prof.enabled)
         prof.round_number = s_data.get("round_number", 0)
+        prof.round_flags = list(s_data.get("round_flags") or [])
+        prof.round_flags_seen_at = float(s_data.get("round_flags_seen_at") or 0.0)
         prof.status = "⏸️ Đã khôi phục (chưa chạy)"
 
         scanned: Optional[Dict[str, List[PostItem]]] = None

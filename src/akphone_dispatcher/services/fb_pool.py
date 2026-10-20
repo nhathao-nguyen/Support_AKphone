@@ -16,8 +16,9 @@ the reel verifier thread can read reel pages as the same account, in its own bro
 Like ``FbWebSource`` it is owned by the scan thread only (Playwright is not thread-safe).
 """
 
+from collections import deque
 import time
-from typing import Callable, Dict, Iterable, List, Optional, Tuple
+from typing import Callable, Deque, Dict, Iterable, List, Optional, Tuple
 
 from akphone_dispatcher.core.fb_profiles import NOT_LOGGED_IN, FbProfileStore, profile_proxy
 from akphone_dispatcher.services.fb_web import (
@@ -28,6 +29,11 @@ from akphone_dispatcher.services.fb_web import (
 )
 
 COOLDOWN_S = 600
+HOUR_S = 3600
+
+
+class RateLimited(RuntimeError):
+    """Every usable account already made its page loads of the last hour."""
 SESSION_REFRESH_SCANS = 50  # re-export the cookies this often (Facebook rotates some)
 
 
@@ -53,6 +59,7 @@ class ProfilePool:
         self.clock = clock
         self.cooldown: Dict[str, float] = {}
         self.scans: Dict[str, int] = {}  # page loads per profile since the tracker started
+        self.recent: Dict[str, Deque[float]] = {}  # page load times per profile, last hour
         self._current: Optional[Tuple[str, Tuple[str, str, str], object]] = None
         self._used = 0
         self._last_id: Optional[str] = None
@@ -61,13 +68,46 @@ class ProfilePool:
         self._session_version = 0
         self._since_export = 0
 
+    # ---------- hourly limit per account ----------
+    def loads_last_hour(self, pid: str, now: float) -> int:
+        times = self.recent.get(pid)
+        while times and now - times[0] >= HOUR_S:
+            times.popleft()
+        return len(times) if times else 0
+
+    def _at_limit(self, pid: str, now: float) -> bool:
+        limit = self.store.max_per_hour
+        return bool(limit) and self.loads_last_hour(pid, now) >= limit
+
+    def _usable(self, now: float) -> List[dict]:
+        return [
+            p for p in self.store.list()
+            if p.get("enabled", True) and not p.get("blocked_reason")
+            and self.cooldown.get(p["id"], 0) <= now
+        ]
+
+    def capacity_wait(self, now: Optional[float] = None) -> float:
+        """Seconds until some usable account may load a page again (0 = now). With no
+        usable account at all it is 0 too: scan() then reports why (blocked, ...)."""
+        now = self.clock() if now is None else now
+        usable = self._usable(now)
+        if not usable or not self.store.max_per_hour:
+            return 0.0
+        waits = []
+        for p in usable:
+            if not self._at_limit(p["id"], now):
+                return 0.0
+            waits.append(self.recent[p["id"]][0] + HOUR_S - now)
+        return max(1.0, min(waits))
+
     # ---------- choosing ----------
     def _pick(self, now: float) -> dict:
         enabled = [p for p in self.store.list() if p.get("enabled", True)]
-        usable = [
-            p for p in enabled
-            if not p.get("blocked_reason") and self.cooldown.get(p["id"], 0) <= now
-        ]
+        usable = [p for p in self._usable(now) if not self._at_limit(p["id"], now)]
+        if not usable and self._usable(now):
+            raise RateLimited(
+                f"Mọi tài khoản đã đủ {self.store.max_per_hour} lượt mở trang trong 1 giờ qua"
+            )
         if not usable:
             if not enabled:
                 raise FbBlocked(
@@ -123,6 +163,7 @@ class ProfilePool:
             profile = self._pick(now)
             try:
                 source = self._open(profile)
+                self.recent.setdefault(profile["id"], deque()).append(now)  # every try counts
                 reels = source.scan(page_url, want_urls=want_urls, min_count=min_count)
             except NotLoggedIn:
                 self.close()

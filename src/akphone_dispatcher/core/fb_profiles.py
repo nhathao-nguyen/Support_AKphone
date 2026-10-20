@@ -18,6 +18,7 @@ import uuid
 PROXY_TYPES = ("none", "socks5", "http")
 NOT_LOGGED_IN = "Chưa đăng nhập Facebook hoặc phiên đã hết hạn: bấm 🔐 Đăng nhập"
 DEFAULT_ROTATE_EVERY = 10  # page loads per profile before moving to the next one
+DEFAULT_MAX_PER_HOUR = 40  # Reels-tab loads per account in any 60 minutes (0 = no limit)
 
 
 @dataclass(frozen=True)
@@ -85,6 +86,7 @@ class FbProfileStore:
         self.lock = threading.RLock()
         self.profiles: List[Dict[str, Any]] = []
         self.rotate_every = DEFAULT_ROTATE_EVERY
+        self.max_per_hour = DEFAULT_MAX_PER_HOUR
         if self.path.is_file():
             self._load()
         else:
@@ -100,6 +102,8 @@ class FbProfileStore:
             data = {}
         self.profiles = list(data.get("profiles") or [])
         self.rotate_every = max(1, int(data.get("rotate_every") or DEFAULT_ROTATE_EVERY))
+        limit = data.get("max_per_hour")
+        self.max_per_hour = DEFAULT_MAX_PER_HOUR if limit is None else max(0, int(limit))
 
     def save(self):
         with self.lock:
@@ -107,7 +111,11 @@ class FbProfileStore:
             temporary = self.path.with_name(f".{self.path.name}.tmp")
             temporary.write_text(
                 json.dumps(
-                    {"rotate_every": self.rotate_every, "profiles": self.profiles},
+                    {
+                        "rotate_every": self.rotate_every,
+                        "max_per_hour": self.max_per_hour,
+                        "profiles": self.profiles,
+                    },
                     ensure_ascii=False,
                     indent=2,
                 ),
@@ -229,4 +237,9 @@ class FbProfileStore:
     def set_rotate_every(self, value: int):
         with self.lock:
             self.rotate_every = max(1, int(value))
+            self.save()
+
+    def set_max_per_hour(self, value: int):
+        with self.lock:
+            self.max_per_hour = max(0, int(value))
             self.save()

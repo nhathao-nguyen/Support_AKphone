@@ -11,12 +11,12 @@ import threading
 import time
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import customtkinter as ctk
 
 from akphone_dispatcher import __version__
-from akphone_dispatcher.core.comment_queue import CommentQueue
+from akphone_dispatcher.core.comment_queue import REPOST_STAGED, CommentQueue
 from akphone_dispatcher.core.config import AppConfig
 from akphone_dispatcher.core.fb_profiles import FbProfileStore
 from akphone_dispatcher.core.models import (
@@ -99,6 +99,7 @@ class AKPhoneApp(CommentTabMixin, ctk.CTk):
             self.comment_queue,
             is_feeding=lambda serial: self.feeder_manager.is_running(serial),
             profile_store=self.fb_profiles,
+            is_page_off=self._is_page_off,
         )
 
         # Multi-device state
@@ -557,6 +558,22 @@ class AKPhoneApp(CommentTabMixin, ctk.CTk):
             fg_color="#475569",
             command=self._update_progress_display,
         ).pack(side="right", padx=12, pady=6)
+        ctk.CTkButton(
+            top_ctrl,
+            text="✅ Bật lại page",
+            width=120,
+            height=28,
+            fg_color="#059669",
+            command=lambda: self._toggle_selected_pages(off=False),
+        ).pack(side="right", padx=(0, 6), pady=6)
+        ctk.CTkButton(
+            top_ctrl,
+            text="⛔ Tắt page",
+            width=110,
+            height=28,
+            fg_color="#b91c1c",
+            command=lambda: self._toggle_selected_pages(off=True),
+        ).pack(side="right", padx=(0, 6), pady=6)
 
         table_box = ctk.CTkFrame(tab, corner_radius=6, fg_color="#181b24")
         table_box.pack(fill="both", expand=True, padx=10, pady=(0, 8))
@@ -567,7 +584,7 @@ class AKPhoneApp(CommentTabMixin, ctk.CTk):
 
         columns = ("serial", "via", "page_id", "fanpage_name", "progress", "status", "updated_at")
         self.progress_tree = ttk.Treeview(
-            tree_frame, columns=columns, show="headings", selectmode="browse"
+            tree_frame, columns=columns, show="headings", selectmode="extended"
         )
         self.progress_tree.heading("serial", text="Thiết Bị (Serial)")
         self.progress_tree.heading("via", text="Via")
@@ -911,6 +928,7 @@ class AKPhoneApp(CommentTabMixin, ctk.CTk):
                     page_links=saved_cfg.get("page_links", ""),
                     enabled=saved_cfg.get("enabled", True),
                     device_info=d,
+                    disabled_pages=list(saved_cfg.get("disabled_pages") or []),
                 )
                 # setdefault: a session restored meanwhile keeps its profile
                 self.device_profiles.setdefault(d.serial, prof).device_info = d
@@ -1040,6 +1058,82 @@ class AKPhoneApp(CommentTabMixin, ctk.CTk):
             )
         except Exception:
             pass
+
+    # ---------- pages turned off by hand (Tab 2) ----------
+    def _is_page_off(self, serial: str, page_id: str) -> bool:
+        prof = self.device_profiles.get(serial)
+        return prof is not None and prof.page_off(page_id)
+
+    def set_pages_off(self, pages: List[Tuple[str, str]], off: bool) -> List[Tuple[str, str]]:
+        """Turn (serial, page_id) pages off / back on, saved in each phone's config.
+
+        Returns the pages that changed. The list is replaced, never edited in place:
+        the feeder and comment threads read it at any time.
+        """
+        changed = []
+        for serial, pid in pages:
+            prof = self.device_profiles.get(serial)
+            if prof is None or prof.page_off(pid) == off:
+                continue
+            others = [p for p in prof.disabled_pages if p != pid]
+            prof.disabled_pages = others + [pid] if off else others
+            self.config.set_profile(serial, {"disabled_pages": list(prof.disabled_pages)})
+            changed.append((serial, pid))
+            logger.info(
+                f"{'⛔' if off else '✅'} [MÁY {serial} | {prof.via_tag}] [{pid}] "
+                + ("đã TẮT page: không nạp bài, không cắm cờ, ngừng quét comment."
+                   if off else "đã BẬT LẠI page: chạy lại từ vòng sau.")
+            )
+        return changed
+
+    def _selected_progress_pages(self) -> List[Tuple[str, str]]:
+        picked = set(self.progress_tree.selection())
+        return [
+            (serial, pid)
+            for serial, prof in self.device_profiles.items()
+            for pid in prof.pages_data
+            if f"{serial}_{pid}" in picked
+        ]
+
+    def _toggle_selected_pages(self, off: bool):
+        title = "Tắt Page" if off else "Bật Lại Page"
+        todo = [(s, p) for s, p in self._selected_progress_pages() if self._is_page_off(s, p) != off]
+        if not todo:
+            messagebox.showinfo(
+                title,
+                "Chọn page trong bảng (giữ Ctrl để chọn nhiều)."
+                if not self._selected_progress_pages()
+                else f"Các page đã chọn đều đã {'tắt' if off else 'bật'} sẵn.",
+            )
+            return
+        lines = [
+            f"• {s} · {p} · {self.device_profiles[s].pages_data[p].fanpage_name}" for s, p in todo
+        ]
+        text = f"{title} {len(todo)} page:\n" + "\n".join(lines[:15]) + ("\n..." if len(lines) > 15 else "")
+        if off:
+            text += (
+                "\n\nPage tắt: không nạp bài mới, không cắm cờ Done, Khởi Tạo bỏ qua; luồng comment "
+                "ngừng quét page và không đẩy comment. Bài đang theo dõi được giữ nguyên, bật lại thì "
+                "chạy tiếp.\nNên bỏ page...txt và cmtpage...txt của page này khỏi vòng lặp AKPhoneS."
+            )
+            in_round = [
+                p for s, p in todo
+                if p in getattr(self.feeder_manager.workers.get(s), "current_round_flags", set())
+            ]
+            if in_round:
+                text += (
+                    f"\n\n⚠ {', '.join(in_round)} đã có cờ Done trong vòng đang chạy: vòng này vẫn chạy "
+                    "nốt, từ vòng sau mới bỏ qua."
+                )
+        else:
+            text += (
+                "\n\nTừ vòng sau page chạy lại (chưa có bài nạp sẵn thì tool nạp bài kế tiếp trước); "
+                "luồng comment quét lại page. Máy đã dừng hoặc đã báo hoàn tất thì bấm Chạy lại máy đó."
+            )
+        if not messagebox.askyesno(title, text):
+            return
+        self.set_pages_off(todo, off)
+        self._update_progress_display()
 
     def _page_identity(self, prof, page: PageInfo):
         """(Fanpage name, Fanpage link) currently written for a page in the device profile."""
@@ -1254,97 +1348,144 @@ class AKPhoneApp(CommentTabMixin, ctk.CTk):
         for warning in post_report.warnings + (cmt_report.warnings if cmt_report else []):
             logger.warning(f"[MÁY {serial}] Mẫu script: {warning}")
 
-        prof.pages_data = {}
-        m_val = prof.fb_index or "1"
-
-        try:
-            for folder_name, posts in scanned.items():
-                n_num = page_number(folder_name)
-                page_id = page_id_for(folder_name, m_val)
-                fanpage_name = page_name_for(folder_name, page_names_map)
-                page_url = page_links_map.get(folder_name) or page_links_map.get(f"page-{n_num}") or ""
-                if not page_url:
-                    logger.warning(
-                        f"[{page_id}] {fanpage_name} chưa có link Fanpage: bài vẫn đăng, nhưng chưa "
-                        "theo dõi view/comment được cho tới khi điền link."
-                    )
-
-                page_video_dir = Path(running_base) / page_id
-                page_video_dir.mkdir(parents=True, exist_ok=True)
-
-                page_caption_filename = f"Caption_{page_id}.txt"
-                ak_caption_path = str(scripts_files_dest / page_caption_filename)
-
-                final_txt = render_post_script(txt_tpl, page_id, fanpage_name, str(page_video_dir))
-                (scripts_dest / f"{page_id}.txt").write_text(final_txt, encoding="utf-8")
-
-                if cmt_tpl:
-                    # The real comment script is written only when a post reaches the
-                    # threshold; until then cmt{ID}.txt does nothing (no double comment).
-                    final_cmt = (
-                        render_cmt_script(cmt_tpl, page_id, fanpage_name, self.config.comment.flag_dir)
-                        if self.comment_queue.has_marked(serial, page_id)
-                        else IDLE_CMT_SCRIPT
-                    )
-                    (scripts_dest / cmt_script_filename(page_id)).write_text(
-                        final_cmt, encoding="utf-8"
-                    )
-
-                if write_offers:
-                    final_ini = (
-                        ini_tpl.replace("{ID}", page_id)
-                        .replace("{PAGE_NAME}", fanpage_name)
-                        .replace("{VIDEO_DIR}", str(page_video_dir))
-                    )
-                    (offers_dest / f"{page_id}.ini").write_text(final_ini, encoding="utf-8")
-
-                page_obj = PageInfo(
-                    page_id=page_id,
-                    folder_name=folder_name,
-                    fanpage_name=fanpage_name,
-                    total_posts=len(posts),
-                    current_idx=1,
-                    posts=posts,
-                    video_dir=str(page_video_dir),
-                    caption_destinations=[ak_caption_path],
-                    last_status="Ready",
-                    page_url=page_url,
+        # The comment tracker stages re-posts under this lock: holding it from the staged
+        # check until every page has its new FED job means no re-post Done flag can land
+        # in between (it would be wiped as "old", then read as posted).
+        failure = None
+        with self.comment_tracker.repost_lock:
+            # A re-post already put back (video + Done flag) would be replaced by the new
+            # store's post 1 and its flag wiped: wait until AKPhoneS has posted it.
+            staged = [
+                j for j in self.comment_queue.active_jobs()
+                if j["serial"] == serial and j.get("repost_state") == REPOST_STAGED
+            ]
+            if staged:
+                lines = [f"• {j['page_id']} bài {j['post_num']} ({j['video_name']})" for j in staged]
+                logger.error(
+                    f"[MÁY {serial} | {prof.via_tag}] Chưa khởi tạo: còn {len(staged)} bài đang chờ AKPhoneS đăng lại."
                 )
-                prof.pages_data[page_id] = page_obj
-
-                # Feed post 1
-                target_post = posts[0]
-                target_dict = {
-                    "post_num": target_post.post_num,
-                    "video_file": target_post.video_file,
-                    "caption_file": target_post.caption_file,
-                    "comment_file": target_post.comment_file,
-                }
-                transfer_payload(
-                    target_dict,
-                    str(page_video_dir),
-                    [ak_caption_path],
-                    [],  # comment is pushed later, when the post reaches the view threshold
-                    fanpage_name,
-                    1,
+                failure = (
+                    "Đang Chờ Đăng Lại - Chưa Khởi Tạo",
+                    f"Máy {serial} ({prof.via_tag}) chưa được khởi tạo, chưa có file nào bị chuyển.\n"
+                    "Các bài sau đã được nạp lại video + cờ Done để đăng lại:\n"
+                    + "\n".join(lines)
+                    + "\n\nĐợi vòng lặp AKPhoneS đăng xong (Tab 5 chuyển 'Đã đăng lại') rồi Khởi Tạo lại.",
                 )
-                queue_post_comment(self.comment_queue, serial, page_obj, 1, target_dict)
-                if "_payload_archive" in target_dict:
-                    target_post.archive_dir = target_dict["_payload_archive"]
+            # A Done flag left from the previous store (e.g. stopped mid-round) would make
+            # AKPhoneS post the new post 1 while no feeder watches, then again on Start.
+            elif not self.adb.clear_done_flags(serial):
+                logger.error(f"[MÁY {serial} | {prof.via_tag}] Chưa khởi tạo: không xóa được cờ Done cũ trên máy.")
+                failure = (
+                    "Chưa Xóa Được Cờ Done - Chưa Khởi Tạo",
+                    f"Máy {serial} ({prof.via_tag}) chưa được khởi tạo, chưa có file nào bị chuyển.\n"
+                    "Không xóa được cờ Done cũ trên điện thoại (máy chưa kết nối ADB?).\n\n"
+                    "Cắm lại cáp, bấm 'Quét ADB' rồi Khởi Tạo lại.",
+                )
+            else:
+                prof.pages_data = {}
+                # flags just wiped belong to the old store: not "posted while away"
+                prof.round_flags, prof.round_flags_seen_at = [], 0.0
+                m_val = prof.fb_index or "1"
 
-            prof.status = "✅ Sẵn sàng"
-            logger.info(
-                f"🎉 [MÁY {serial} | {prof.via_tag}] Đã tạo hoàn tất {len(scanned)} kịch bản (1 Page = 1 Script)!"
-            )
-            return True
-        except Exception as e:
-            prof.status = "❌ Lỗi tạo kịch bản"
-            logger.error(f"Lỗi khi khởi tạo kịch bản cho máy {serial}: {e}", exc_info=True)
-            messagebox.showerror(
-                "Lỗi Khởi Tạo",
-                f"Đã xảy ra lỗi khi tạo kịch bản cho máy {serial}:\n{e}",
-            )
+                try:
+                    for folder_name, posts in scanned.items():
+                        n_num = page_number(folder_name)
+                        page_id = page_id_for(folder_name, m_val)
+                        fanpage_name = page_name_for(folder_name, page_names_map)
+                        page_url = page_links_map.get(folder_name) or page_links_map.get(f"page-{n_num}") or ""
+                        if not page_url:
+                            logger.warning(
+                                f"[{page_id}] {fanpage_name} chưa có link Fanpage: bài vẫn đăng, nhưng chưa "
+                                "theo dõi view/comment được cho tới khi điền link."
+                            )
+
+                        page_video_dir = Path(running_base) / page_id
+                        page_video_dir.mkdir(parents=True, exist_ok=True)
+
+                        page_caption_filename = f"Caption_{page_id}.txt"
+                        ak_caption_path = str(scripts_files_dest / page_caption_filename)
+
+                        final_txt = render_post_script(txt_tpl, page_id, fanpage_name, str(page_video_dir))
+                        (scripts_dest / f"{page_id}.txt").write_text(final_txt, encoding="utf-8")
+
+                        if cmt_tpl:
+                            # The real comment script is written only when a post reaches the
+                            # threshold; until then cmt{ID}.txt does nothing (no double comment).
+                            final_cmt = (
+                                render_cmt_script(cmt_tpl, page_id, fanpage_name, self.config.comment.flag_dir)
+                                if self.comment_queue.has_marked(serial, page_id)
+                                else IDLE_CMT_SCRIPT
+                            )
+                            (scripts_dest / cmt_script_filename(page_id)).write_text(
+                                final_cmt, encoding="utf-8"
+                            )
+
+                        if write_offers:
+                            final_ini = (
+                                ini_tpl.replace("{ID}", page_id)
+                                .replace("{PAGE_NAME}", fanpage_name)
+                                .replace("{VIDEO_DIR}", str(page_video_dir))
+                            )
+                            (offers_dest / f"{page_id}.ini").write_text(final_ini, encoding="utf-8")
+
+                        page_obj = PageInfo(
+                            page_id=page_id,
+                            folder_name=folder_name,
+                            fanpage_name=fanpage_name,
+                            total_posts=len(posts),
+                            current_idx=1,
+                            posts=posts,
+                            video_dir=str(page_video_dir),
+                            caption_destinations=[ak_caption_path],
+                            last_status="Ready",
+                            page_url=page_url,
+                        )
+                        prof.pages_data[page_id] = page_obj
+                        if prof.page_off(page_id):
+                            # turned off by hand: post 1 stays in the store; once the page is
+                            # turned back on the feeder loads it like any pending feed
+                            page_obj.current_idx = 0
+                            logger.warning(
+                                f"[MÁY {serial} | {prof.via_tag}] [{page_id}] {fanpage_name}: page đã tắt, không nạp bài."
+                            )
+                            continue
+
+                        # Feed post 1
+                        target_post = posts[0]
+                        target_dict = {
+                            "post_num": target_post.post_num,
+                            "video_file": target_post.video_file,
+                            "caption_file": target_post.caption_file,
+                            "comment_file": target_post.comment_file,
+                        }
+                        transfer_payload(
+                            target_dict,
+                            str(page_video_dir),
+                            [ak_caption_path],
+                            [],  # comment is pushed later, when the post reaches the view threshold
+                            fanpage_name,
+                            1,
+                        )
+                        queue_post_comment(self.comment_queue, serial, page_obj, 1, target_dict)
+                        if "_payload_archive" in target_dict:
+                            target_post.archive_dir = target_dict["_payload_archive"]
+                except Exception as e:
+                    prof.status = "❌ Lỗi tạo kịch bản"
+                    logger.error(f"Lỗi khi khởi tạo kịch bản cho máy {serial}: {e}", exc_info=True)
+                    failure = (
+                        "Lỗi Khởi Tạo",
+                        f"Đã xảy ra lỗi khi tạo kịch bản cho máy {serial}:\n{e}",
+                    )
+
+        # Shown once the lock is free: an open dialog must not stall the tracker's flags thread.
+        if failure:
+            messagebox.showerror(*failure)
             return False
+        prof.status = "✅ Sẵn sàng"
+        logger.info(
+            f"🎉 [MÁY {serial} | {prof.via_tag}] Đã tạo hoàn tất {len(scanned)} kịch bản (1 Page = 1 Script)!"
+        )
+        return True
 
     def _warn_if_offers_missing(self, ak_dir: str) -> bool:
         """Tell the user when 'create OFFERS' is ticked but the AKPhone(S) folder has none."""
@@ -1472,8 +1613,14 @@ class AKPhoneApp(CommentTabMixin, ctk.CTk):
             messagebox.showwarning("Cảnh báo", "Máy này chưa được khởi tạo kịch bản!")
             return
         # pages whose post is already live are left out: flagging them would post it twice
-        active_pages = [pid for pid, inf in prof.pages_data.items() if inf.ready_to_post]
+        active_pages = [
+            pid for pid, inf in prof.pages_data.items() if inf.ready_to_post and not prof.page_off(pid)
+        ]
         if self.adb.init_round_flags(self.selected_serial, active_pages):
+            if not self.feeder_manager.is_running(self.selected_serial):
+                # no worker watches these flags: the next Chạy checks which ones AKPhoneS used
+                prof.round_flags, prof.round_flags_seen_at = sorted(active_pages), time.time()
+                self.session_manager.save_device(self.selected_serial, prof)
             messagebox.showinfo(
                 "Thành Công", f"Đã nạp lại {len(active_pages)} cờ Done lên máy {self.selected_serial}!"
             )
@@ -1588,7 +1735,7 @@ class AKPhoneApp(CommentTabMixin, ctk.CTk):
                         pid,
                         info.fanpage_name,
                         prog_str,
-                        info.last_status,
+                        "⛔ Đã tắt (bấm Bật lại page)" if prof.page_off(pid) else info.last_status,
                         now_str,
                     )
                     if self.progress_tree.exists(row_id):
@@ -1856,6 +2003,10 @@ class AKPhoneApp(CommentTabMixin, ctk.CTk):
                 restored = restore_device_profiles(
                     session, self.device_profiles, self.config.running_dir, caption_dir
                 )
+                for serial, prof in self.device_profiles.items():  # the setting lives in the config
+                    prof.disabled_pages = list(
+                        self.config.device_profiles.get(serial, {}).get("disabled_pages") or []
+                    )
                 self._update_progress_display()
                 logger.info(
                     f"Đã khôi phục tiến độ {restored} máy (vị trí bài, bài đã đăng, lỗi nạp bài). "

@@ -567,6 +567,8 @@ class CommentTabMixin:
                     f"{st['scans_last_hour']} lượt mở trang/giờ qua"
                     + (f" · profile: {st['profile']}" if st.get("profile") else "")
                     + (f" · ⚠ xác minh: {st['verify_note']}" if st.get("verify_note") else "")
+                    + (f" · ⚠ đọc view trễ {st['views_lag_min']} phút" if st.get("views_lag_min") else "")
+                    + (f" · ⌛ {st['rate_note']}" if st.get("rate_note") else "")
                 )
             else:
                 status = ""
