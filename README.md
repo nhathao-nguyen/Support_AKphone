@@ -108,6 +108,21 @@ File thực thi độc lập sẽ được tạo tại `dist\AKPhone_Dispatcher_
 pytest
 ```
 
+### 4. Phát hành bản mới & tự cập nhật
+Commit hết thay đổi rồi chạy (ví dụ lên bản 2.1.0):
+```cmd
+Release.bat 2.1.0
+```
+Script đặt `__version__`, commit, tạo tag `v2.1.0` và push. GitHub Actions (`build.yml`) chạy test,
+build exe và tạo Release gồm `AKPhone_Dispatcher_Recovered.exe` (để tool tự cập nhật) và file zip
+(để cài mới). Ghi chú thay đổi được tạo tự động từ các commit.
+
+Tool của người dùng kiểm tra Release mới lúc mở và mỗi 6 giờ. Khi có bản mới, nút **⬆️ Cập nhật vX**
+trên thanh đầu sáng lên và hiện hộp thoại hỏi. Bấm đồng ý: tool tải exe mới (kiểm tra kích thước +
+SHA-256), dừng các luồng, lưu tiến độ, thay file exe và tự mở lại. Cài đặt, profile, tiến độ trong
+`configs/` giữ nguyên. Nếu không thay được file, bản mới nằm ở `...exe.new` và lý do ghi trong
+`...exe.update-failed.txt`.
+
 ---
 
 ## 🛠️ Yêu Cầu Hệ Thống

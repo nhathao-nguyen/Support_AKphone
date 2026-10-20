@@ -1,10 +1,15 @@
 name: Build & Release Executable
 
+# Push a tag v2.1.0 (Release.bat 2.1.0 does it) -> test, build the exe, publish a GitHub
+# release. Running tools see the new release and offer the update to their users.
 on:
   push:
     tags:
       - "v*"
   workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   build-windows:
@@ -14,40 +19,55 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Python 3.11
+      - name: Set up Python 3.13
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.13"
 
       - name: Install Dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
           pip install -r requirements-build.txt
+          pip install -r requirements-dev.txt
+
+      - name: Run tests
+        run: pytest
+
+      - name: Stamp version from tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: python scripts/set_version.py "${{ github.ref_name }}"
 
       - name: Build with PyInstaller
-        run: |
-          python -m PyInstaller --noconfirm --distpath dist --workpath build AKPhone_Dispatcher_Recovered.spec
-          Copy-Item app_settings.json dist/ -Force
-          Copy-Item template_script.txt dist/ -Force
-          Copy-Item template_config.ini dist/ -Force
-          if (Test-Path configs) { Copy-Item configs dist/configs -Recurse -Force }
-          if (Test-Path assets) { Copy-Item assets dist/assets -Recurse -Force }
+        run: python -m PyInstaller --noconfirm --distpath dist --workpath build AKPhone_Dispatcher_Recovered.spec
 
-      - name: Compress Build Artifact
+      - name: Package
+        id: package
+        shell: pwsh
         run: |
-          Compress-Archive -Path dist/* -DestinationPath akphone-dispatcher-windows.zip -Force
+          $ver = (Select-String -Path src/akphone_dispatcher/__init__.py -Pattern '__version__ = "(.*)"').Matches[0].Groups[1].Value
+          New-Item -ItemType Directory -Force dist/configs, dist/assets | Out-Null
+          Copy-Item app_settings.json, template_script.txt, template_config.ini, template_cmt.txt dist/ -Force
+          Copy-Item docs/HUONG_DAN_VAN_HANH.txt dist/ -Force
+          Copy-Item configs/app_settings.json dist/configs/ -Force
+          Copy-Item assets/* dist/assets/ -Force
+          $zip = "AKPhone_Dispatcher_v$ver.zip"
+          Compress-Archive -Path dist/* -DestinationPath $zip -Force
+          "zip=$zip" >> $env:GITHUB_OUTPUT
 
       - name: Upload Build Artifact
         uses: actions/upload-artifact@v4
         with:
           name: akphone-dispatcher-windows
-          path: akphone-dispatcher-windows.zip
+          path: |
+            ${{ steps.package.outputs.zip }}
+            dist/AKPhone_Dispatcher_Recovered.exe
 
       - name: Create Release
-        if: startsWith(github.ref, 'refs/tags/')
+        if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: akphone-dispatcher-windows.zip
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # the exe is what running tools download to update; the zip is for a fresh install
+          files: |
+            dist/AKPhone_Dispatcher_Recovered.exe
+            ${{ steps.package.outputs.zip }}
+          generate_release_notes: true

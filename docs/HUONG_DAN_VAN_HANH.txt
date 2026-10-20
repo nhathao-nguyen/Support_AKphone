@@ -44,6 +44,15 @@ Tool hỏi "Khôi phục tiến độ?":
             Sau đó BỎ QUA bước 5.
   - KHÔNG : bắt đầu kho bài mới.
 
+CẬP NHẬT BẢN MỚI (tự động, không cần chép file):
+  - Tool tự kiểm tra bản mới lúc mở và mỗi 6 giờ (cần Internet).
+    Có bản mới: nút "⬆️ Cập nhật vX" trên cùng sáng màu cam và tool hỏi.
+  - Bấm đồng ý: tool tải bản mới (vẫn chạy trong lúc tải), rồi tự dừng,
+    lưu tiến độ, thay file exe và tự mở lại. Khi mở lại chọn CÓ khôi
+    phục tiến độ rồi bấm chạy lại. Cài đặt, profile, tiến độ giữ nguyên.
+  - Để sau: bấm nút "⬆️ Cập nhật vX" bất cứ lúc nào.
+  - Bấm "🔔 Kiểm tra cập nhật" để kiểm tra ngay.
+
 LẦN ĐẦU CÀI (chỉ làm 1 lần):
   1. Tab 4: chọn thư mục AKPhoneS (vd C:\AKPhoneS, thư mục có
      assets\SCRIPTS; KHÔNG chọn C:\AKPhone nếu máy có cả hai),

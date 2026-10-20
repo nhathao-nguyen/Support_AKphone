@@ -42,6 +42,7 @@ from akphone_dispatcher.core.scanner import (
     scan_source_directory,
 )
 from akphone_dispatcher.gui.comment_tab import CommentTabMixin
+from akphone_dispatcher.gui.update_mixin import UpdateMixin
 from akphone_dispatcher.gui.workers.feeder_worker import FarmFeederManager, queue_post_comment
 from akphone_dispatcher.services.adb_service import AdbService
 from akphone_dispatcher.services.comment_tracker import (
@@ -74,7 +75,7 @@ ctk.set_appearance_mode("Dark")
 ctk.set_default_color_theme("blue")
 
 
-class AKPhoneApp(CommentTabMixin, ctk.CTk):
+class AKPhoneApp(CommentTabMixin, UpdateMixin, ctk.CTk):
     """Multi-device phone farm dispatcher and feeder application."""
 
     def __init__(self):
@@ -163,7 +164,7 @@ class AKPhoneApp(CommentTabMixin, ctk.CTk):
             pass
         threading.Thread(target=self._shutdown, name="Shutdown", daemon=True).start()
 
-    def _shutdown(self, timeout_s: float = 40):
+    def _shutdown(self, timeout_s: float = 40, before_exit: Optional[Callable[[], Any]] = None):
         deadline = time.time() + timeout_s
         try:
             self.feeder_manager.stop_all()
@@ -182,6 +183,11 @@ class AKPhoneApp(CommentTabMixin, ctk.CTk):
         except Exception as e:
             logger.error(f"Lỗi khi đóng tool: {e}")
         finally:
+            if before_exit is not None:
+                try:
+                    before_exit()
+                except Exception as e:
+                    logger.error(f"Lỗi trước khi thoát: {e}")
             self.dispatch_ui(self.destroy)
 
     # ---------- disk housekeeping ----------
@@ -302,6 +308,8 @@ class AKPhoneApp(CommentTabMixin, ctk.CTk):
             command=self._refresh_devices_async,
         )
         btn_refresh_dev.pack(side="left", padx=(0, 10))
+
+        self._create_update_button(btn_frame)
 
         self.lbl_global_status = ctk.CTkLabel(
             btn_frame,
@@ -1987,7 +1995,7 @@ class AKPhoneApp(CommentTabMixin, ctk.CTk):
                 test_notifier._post_text(text)
                 self.dispatch_ui(lambda: messagebox.showinfo("Đã Gửi", "Telegram đã nhận tin thử nghiệm!"))
             except Exception as e:
-                self.dispatch_ui(lambda: messagebox.showerror("Gửi Thất Bại", f"Không gửi được Telegram:\n{e}"))
+                self.dispatch_ui(lambda err=e: messagebox.showerror("Gửi Thất Bại", f"Không gửi được Telegram:\n{err}"))
 
         threading.Thread(target=work, name="TelegramTest", daemon=True).start()
 
