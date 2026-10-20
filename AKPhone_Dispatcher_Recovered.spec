@@ -16,6 +16,10 @@ datas += pw_datas
 binaries += pw_binaries
 hiddenimports += pw_hidden + ['playwright.sync_api']
 hiddenimports += collect_submodules('akphone_dispatcher')
+# Defaults the bare exe writes next to itself on first run (utils/bootstrap.py)
+for f in ['template_script.txt', 'template_config.ini', 'template_cmt.txt',
+          'configs/app_settings.json', 'docs/HUONG_DAN_VAN_HANH.txt']:
+    datas.append((str(project / f), 'defaults'))
 
 a = Analysis(
     [str(project / 'main.py')],

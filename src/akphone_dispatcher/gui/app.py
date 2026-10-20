@@ -55,6 +55,7 @@ from akphone_dispatcher.services.comment_tracker import (
 )
 from akphone_dispatcher.services.notifier import TelegramNotifier
 from akphone_dispatcher.services.session import SessionManager, restore_device_profiles
+from akphone_dispatcher.utils.bootstrap import ensure_runtime_files
 from akphone_dispatcher.utils.helpers import resolve_akphone_layout
 from akphone_dispatcher.utils.housekeeping import (
     CleanReport,
@@ -83,6 +84,11 @@ class AKPhoneApp(CommentTabMixin, UpdateMixin, ctk.CTk):
         self.title(f"⚡ AKPhone Multi-Device Farm Dispatcher & Feeder v{__version__}")
         self.geometry("1180x860")
         self.minsize(1040, 740)
+
+        # A bare exe writes its templates, default settings and guide on first run
+        created = ensure_runtime_files()
+        if created:
+            logger.info(f"🆕 Đã tạo file mặc định: {', '.join(created)}")
 
         # Core services
         self.config = AppConfig()

@@ -109,13 +109,14 @@ pytest
 ```
 
 ### 4. Phát hành bản mới & tự cập nhật
-Commit hết thay đổi rồi chạy (ví dụ lên bản 2.1.0):
-```cmd
-Release.bat 2.1.0
-```
-Script đặt `__version__`, commit, tạo tag `v2.1.0` và push. GitHub Actions (`build.yml`) chạy test,
-build exe và tạo Release gồm `AKPhone_Dispatcher_Recovered.exe` (để tool tự cập nhật) và file zip
-(để cài mới). Ghi chú thay đổi được tạo tự động từ các commit.
+Làm việc trên nhánh khác (vd `ban-cu`): mỗi lần push chỉ chạy test (`ci.yml`).
+Khi muốn đưa tới người dùng: push / merge vào **`main`**. GitHub Actions (`build.yml`) chạy test,
+tự tăng số bản (v2.0.1 -> v2.0.2), build exe và tạo Release chỉ gồm `AKPhone_Dispatcher_Recovered.exe`.
+Ghi chú thay đổi = tiêu đề các commit kể từ bản trước (người dùng thấy trong hộp thoại cập nhật).
+Muốn nhảy bản lớn (vd 2.1.0): `python scripts/set_version.py 2.1.0`, commit rồi push lên `main`.
+
+Cài máy mới: chỉ cần tải file exe từ trang Releases, đặt vào một thư mục riêng (vd `C:\AKPhoneTool`)
+rồi chạy. Lần chạy đầu tool tự tạo `configs\`, `logs\`, các file kịch bản mẫu và hướng dẫn.
 
 Tool của người dùng kiểm tra Release mới lúc mở và mỗi 6 giờ. Khi có bản mới, nút **⬆️ Cập nhật vX**
 trên thanh đầu sáng lên và hiện hộp thoại hỏi. Bấm đồng ý: tool tải exe mới (kiểm tra kích thước +

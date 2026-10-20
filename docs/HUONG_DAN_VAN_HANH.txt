@@ -44,6 +44,12 @@ Tool hỏi "Khôi phục tiến độ?":
             Sau đó BỎ QUA bước 5.
   - KHÔNG : bắt đầu kho bài mới.
 
+CÀI MÁY MỚI:
+  - Tải AKPhone_Dispatcher_Recovered.exe ở trang Releases trên GitHub,
+    đặt vào 1 thư mục riêng (vd C:\AKPhoneTool) rồi chạy.
+  - Lần đầu tool tự tạo configs\, logs\, kịch bản mẫu và file hướng dẫn
+    này. Sau đó làm phần "LẦN ĐẦU CÀI" bên dưới.
+
 CẬP NHẬT BẢN MỚI (tự động, không cần chép file):
   - Tool tự kiểm tra bản mới lúc mở và mỗi 6 giờ (cần Internet).
     Có bản mới: nút "⬆️ Cập nhật vX" trên cùng sáng màu cam và tool hỏi.
